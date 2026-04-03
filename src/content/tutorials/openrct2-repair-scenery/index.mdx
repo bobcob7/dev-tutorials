@@ -1,0 +1,36 @@
+---
+title: "OpenRCT2: Handyman Repair Scenery Order"
+description: "Add a new staff order that lets handymen seek out and repair vandalised path additions — benches, bins, and lamps."
+difficulty: beginner
+topics: ["C++", "OpenRCT2", "game dev", "open source"]
+repo: "https://github.com/OpenRCT2/OpenRCT2"
+publishDate: 2026-04-03
+---
+
+import { Content as Guide } from "../../tutorials/openrct2-repair-scenery/index.mdx";
+
+This tutorial walks through implementing a new handyman staff order in the OpenRCT2 codebase.
+For the full step-by-step guide, see the dedicated site built for this feature.
+
+## What you'll build
+
+Handymen will gain a fifth toggleable order — **Repair vandalised scenery** — that lets them
+autonomously find and fix broken path additions within their patrol area.
+
+## Steps overview
+
+1. Add the order bitmask flag
+2. Register a sprite ID and create the icon
+3. Write the pathfinding detector
+4. Implement the repair action state
+5. Track and persist the statistic
+6. Update the UI window (orders + stats tabs)
+7. Add localisation strings
+8. Expose the stat in the plugin API
+9. Write a changelog entry
+
+## Prerequisites
+
+- Basic C++ (structs, enums, pointers, bitwise operators)
+- Git and CMake installed
+- The repo cloned and building locally

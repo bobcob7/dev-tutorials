@@ -1,0 +1,43 @@
+---
+import BaseLayout from "./BaseLayout.astro";
+
+interface Props {
+  title: string;
+  description: string;
+  difficulty: "beginner" | "intermediate" | "advanced";
+  topics: string[];
+  repo?: string;
+  headings: { depth: number; slug: string; text: string }[];
+}
+
+const { title, description, difficulty, topics, repo, headings } = Astro.props;
+
+const toc = headings.filter((h) => h.depth === 2 || h.depth === 3);
+---
+
+<BaseLayout title={title} description={description}>
+  <div class="tutorial-layout">
+    <article class="tutorial-content" data-pagefind-body>
+      <h1>{title}</h1>
+      <div class="tutorial-meta">
+        <span class={`badge badge-${difficulty}`}>{difficulty}</span>
+        {topics.map((t) => <span class="topic-tag">{t}</span>)}
+        {repo && <a href={repo} target="_blank" style="font-size:12px; margin-left:auto;">View repo →</a>}
+      </div>
+      <slot />
+    </article>
+
+    {toc.length > 0 && (
+      <aside class="toc">
+        <div class="toc-title">On this page</div>
+        <ol>
+          {toc.map((h) => (
+            <li style={h.depth === 3 ? "padding-left: 12px" : ""}>
+              <a href={`#${h.slug}`}>{h.text}</a>
+            </li>
+          ))}
+        </ol>
+      </aside>
+    )}
+  </div>
+</BaseLayout>

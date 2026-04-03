@@ -1,0 +1,40 @@
+---
+import { getCollection } from "astro:content";
+import BaseLayout from "../../layouts/BaseLayout.astro";
+
+const tutorials = (await getCollection("tutorials")).sort(
+  (a, b) => b.data.publishDate.valueOf() - a.data.publishDate.valueOf()
+);
+
+const difficulties = ["beginner", "intermediate", "advanced"] as const;
+---
+
+<BaseLayout title="All Tutorials">
+  <div class="page">
+    <h1>All Tutorials</h1>
+    <p class="lead">Browse {tutorials.length} tutorial{tutorials.length !== 1 ? "s" : ""} across all topics.</p>
+
+    {difficulties.map((level) => {
+      const group = tutorials.filter((t) => t.data.difficulty === level);
+      if (group.length === 0) return null;
+      return (
+        <div>
+          <h2 style="text-transform: capitalize">{level}</h2>
+          <div class="card-grid">
+            {group.map((t) => (
+              <a href={`/tutorials/${t.slug}`} class="tutorial-card">
+                <span class="card-title">{t.data.title}</span>
+                <span class="card-desc">{t.data.description}</span>
+                <div class="card-meta">
+                  {t.data.topics.slice(0, 3).map((tag) => (
+                    <span class="topic-tag">{tag}</span>
+                  ))}
+                </div>
+              </a>
+            ))}
+          </div>
+        </div>
+      );
+    })}
+  </div>
+</BaseLayout>

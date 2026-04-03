@@ -1,0 +1,21 @@
+---
+// Pagefind is only available after `npm run build`.
+// In dev mode this component renders the container but search won't work
+// until you run a build first. See README for details.
+---
+
+<div class="search-wrap">
+  <div id="search"></div>
+</div>
+
+<link href="/_pagefind/pagefind-ui.css" rel="stylesheet" />
+<script src="/_pagefind/pagefind-ui.js" is:inline type="text/javascript"></script>
+<script is:inline>
+  window.addEventListener("DOMContentLoaded", () => {
+    new PagefindUI({
+      element: "#search",
+      showSubResults: true,
+      resetStyles: false,
+    });
+  });
+</script>

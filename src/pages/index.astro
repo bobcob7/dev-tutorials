@@ -1,0 +1,35 @@
+---
+import { getCollection } from "astro:content";
+import BaseLayout from "../layouts/BaseLayout.astro";
+import Search from "../components/Search.astro";
+
+const tutorials = (await getCollection("tutorials")).sort(
+  (a, b) => b.data.publishDate.valueOf() - a.data.publishDate.valueOf()
+);
+---
+
+<BaseLayout title="Dev Tutorials">
+  <div class="hero">
+    <h1>Dev<span style="color: var(--accent-hover)">Tutorials</span></h1>
+    <p>Step-by-step guides for contributing to open-source projects.</p>
+    <Search />
+  </div>
+
+  <div class="page" style="padding-top: 0">
+    <p class="section-label">{tutorials.length} tutorial{tutorials.length !== 1 ? "s" : ""}</p>
+    <div class="card-grid">
+      {tutorials.map((t) => (
+        <a href={`/tutorials/${t.slug}`} class="tutorial-card">
+          <span class="card-title">{t.data.title}</span>
+          <span class="card-desc">{t.data.description}</span>
+          <div class="card-meta">
+            <span class={`badge badge-${t.data.difficulty}`}>{t.data.difficulty}</span>
+            {t.data.topics.slice(0, 3).map((tag) => (
+              <span class="topic-tag">{tag}</span>
+            ))}
+          </div>
+        </a>
+      ))}
+    </div>
+  </div>
+</BaseLayout>
