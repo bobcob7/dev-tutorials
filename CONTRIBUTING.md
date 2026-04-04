@@ -54,14 +54,17 @@ so the table of contents is generated automatically.
 
 ## MDX components
 
-You can use standard HTML inside `.mdx` files. The site's global CSS provides
-these utility classes:
+You can use JSX-style HTML inside `.mdx` files. The site's global CSS provides
+these utility classes.
+
+> **Important:** MDX follows JSX rules — always use `className=` not `class=`,
+> and `htmlFor=` not `for=`. Using `class=` will break the build.
 
 ### Callouts
 
 ```html
-<div class="callout callout-tip">
-  <span class="callout-title">Tip</span>
+<div className="callout callout-tip">
+  <span className="callout-title">Tip</span>
   <p>Some helpful advice here.</p>
 </div>
 ```

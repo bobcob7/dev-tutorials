@@ -7,10 +7,7 @@ repo: "https://github.com/OpenRCT2/OpenRCT2"
 publishDate: 2026-04-03
 ---
 
-import { Content as Guide } from "../../tutorials/openrct2-repair-scenery/index.mdx";
-
 This tutorial walks through implementing a new handyman staff order in the OpenRCT2 codebase.
-For the full step-by-step guide, see the dedicated site built for this feature.
 
 ## What you'll build
 
@@ -19,18 +16,110 @@ autonomously find and fix broken path additions within their patrol area.
 
 ## Steps overview
 
-1. Add the order bitmask flag
-2. Register a sprite ID and create the icon
-3. Write the pathfinding detector
+1. Add the order bitmask flag in `Staff.h`
+2. Register a sprite ID and create the icon in `SpriteIds.h`
+3. Write the pathfinding detector in `Staff.cpp`
 4. Implement the repair action state
 5. Track and persist the statistic
 6. Update the UI window (orders + stats tabs)
-7. Add localisation strings
+7. Add localisation strings in `en-GB.txt`
 8. Expose the stat in the plugin API
 9. Write a changelog entry
 
 ## Prerequisites
 
-- Basic C++ (structs, enums, pointers, bitwise operators)
+- Basic C++ — structs, enums, pointers, bitwise operators
 - Git and CMake installed
 - The repo cloned and building locally
+
+<div className="callout callout-tip">
+  <span className="callout-title">Reference pattern</span>
+  <p>
+    Before writing any code, search for <code>STAFF_ORDERS_EMPTY_BINS</code> and
+    trace every usage. The bin-emptying order is the closest existing analogue
+    to what we're building — every step in this tutorial models its approach.
+  </p>
+</div>
+
+## Step 1 — Add the order flag
+
+Open `src/openrct2/entity/Staff.h` and add a new constant to the `STAFF_ORDERS` enum.
+Each order is a power-of-two bit so multiple orders can be combined in a single byte.
+
+```cpp
+enum STAFF_ORDERS
+{
+    STAFF_ORDERS_SWEEPING       = (1 << 0),
+    STAFF_ORDERS_WATER_FLOWERS  = (1 << 1),
+    STAFF_ORDERS_EMPTY_BINS     = (1 << 2),
+    STAFF_ORDERS_MOWING         = (1 << 3),
+    STAFF_ORDERS_REPAIR_SCENERY = (1 << 4),  // new
+    // ...
+};
+```
+
+## Step 2 — Register a sprite ID
+
+Open `src/openrct2/SpriteIds.h`. Find the existing staff order icons and append a new ID
+after the last registered sprite in the G2 block.
+
+```cpp
+SPR_STAFF_ORDERS_SWEEPING      = 5111,
+SPR_STAFF_ORDERS_WATER_FLOWERS = 5112,
+SPR_STAFF_ORDERS_EMPTY_BINS    = 5113,
+SPR_STAFF_ORDERS_MOWING        = 5114,
+// ...
+SPR_STAFF_ORDERS_REPAIR_SCENERY = <NEXT_ID>,  // new
+```
+
+Create a 24×24 PNG in `resources/g2/` and register it in `sprites.json`.
+
+## Step 3 — Pathfinding
+
+Add `UpdatePatrollingFindBrokenScenery()` to `Staff.cpp`. It follows the same pattern
+as `UpdatePatrollingFindBin()` — check the order flag, walk the tile element stack,
+test the condition (`IsBroken()` instead of bin capacity), and transition state.
+
+```cpp
+bool Staff::UpdatePatrollingFindBrokenScenery()
+{
+    if (!(StaffOrders & STAFF_ORDERS_REPAIR_SCENERY))
+        return false;
+
+    if (GetNextIsSurface())
+        return false;
+
+    TileElement* tileElement = MapGetFirstElementAt(NextLoc);
+    if (tileElement == nullptr)
+        return false;
+
+    for (;; tileElement++)
+    {
+        if (tileElement->GetType() == TileElementType::Path
+            && tileElement->GetBaseZ() == NextLoc.z)
+            break;
+        if (tileElement->IsLastForTile())
+            return false;
+    }
+
+    if (!tileElement->AsPath()->HasAddition())    return false;
+    if (!tileElement->AsPath()->IsBroken())       return false;
+    if (tileElement->AsPath()->AdditionIsGhost()) return false;
+
+    SetState(PeepState::repairingScenery);
+    SubState = 0;
+    SetDestination(tileElement->AsPath()->GetLocation().ToTileStart(), 3);
+    return true;
+}
+```
+
+Then call it from the dispatch block at the bottom of `UpdatePatrolling()`.
+
+## Steps 4–9
+
+Continue by adding `PeepState::repairingScenery`, implementing `UpdateRepairingScenery()`,
+adding `StaffSceneryRepaired` to the struct, updating `ResetStats()` and `Serialise()`,
+adding the UI checkbox and stats row, writing localisation strings, and exposing
+`sceneryRepaired` in the scripting API.
+
+Each step follows the equivalent bin-emptying code as its model.
