@@ -2,7 +2,7 @@
 title: "Deploy to Cloudflare Workers"
 description: "Host your Astro site for free on Cloudflare Workers with Static Assets — Cloudflare's modern replacement for Pages."
 difficulty: beginner
-topics: ["Cloudflare", "deployment", "hosting", "Astro", "CI/CD"]
+topics: ["Cloudflare", "deployment", "hosting", "Astro"]
 publishDate: 2026-04-07
 ---
 
@@ -89,44 +89,20 @@ Your site is now live on Cloudflare's global CDN.
   </p>
 </div>
 
-## Step 5 — Automate deploys with GitHub Actions
+## Step 5 — Connect GitHub for automatic deploys
 
-Rather than running `wrangler deploy` manually, set up a GitHub Action to deploy
-on every push to `main`.
+Rather than running `wrangler deploy` manually on every change, connect your GitHub
+repository through the Cloudflare dashboard for automatic deploys on every push.
 
-Create `.github/workflows/deploy.yml`:
+1. In the **Workers & Pages** dashboard, open your Worker
+2. Go to **Settings → Build** (or **Deployments → Connect to Git**)
+3. Click **Connect a repository** and authorise Cloudflare to access your GitHub account
+4. Select your repository and branch (`main`)
+5. Set the build command to `npm run build` and the output directory to `dist`
+6. Click **Save**
 
-```yaml
-name: Deploy
-
-on:
-  push:
-    branches: [main]
-
-jobs:
-  deploy:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-      - run: npm ci
-      - run: npm run build
-      - run: npx wrangler deploy
-        env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-```
-
-Then add your API token to GitHub:
-
-1. In the Cloudflare dashboard go to **My Profile → API Tokens → Create Token**
-2. Use the **Edit Cloudflare Workers** template
-3. Copy the token
-4. In your GitHub repo go to **Settings → Secrets and variables → Actions**
-5. Add a secret named `CLOUDFLARE_API_TOKEN`
-
-Every push to `main` now triggers a build and deploy automatically.
+From this point, every push to `main` triggers a build and deploy automatically —
+no API tokens or GitHub Actions required.
 
 ## Optional — Custom domain
 
