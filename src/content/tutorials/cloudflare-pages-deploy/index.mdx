@@ -1,137 +1,151 @@
 ---
-title: "Deploy to Cloudflare Pages"
-description: "Host your Astro site for free on Cloudflare Pages with automatic deployments on every push to GitHub."
+title: "Deploy to Cloudflare Workers"
+description: "Host your Astro site for free on Cloudflare Workers with Static Assets — Cloudflare's modern replacement for Pages."
 difficulty: beginner
 topics: ["Cloudflare", "deployment", "hosting", "Astro", "CI/CD"]
-publishDate: 2026-04-04
+publishDate: 2026-04-07
 ---
 
-Cloudflare Pages is a JAMstack platform that builds and hosts static sites globally
-across Cloudflare's network. The free tier covers unlimited sites, 500 builds per month,
-and unlimited bandwidth — more than enough for a personal tutorial site.
+Cloudflare Workers with Static Assets is the modern way to host static sites on
+Cloudflare's global network. It replaces Cloudflare Pages, which is being deprecated.
+The free tier covers 100,000 requests per day — plenty for a personal tutorial site.
+
+<div className="callout callout-info">
+  <span className="callout-title">Cloudflare Pages is deprecated</span>
+  <p>
+    If you see "Create a Pages project" in the dashboard, use the <strong>Workers</strong>
+    path instead. Pages is being retired in favour of Workers with Static Assets.
+  </p>
+</div>
 
 ## Prerequisites
 
-- Your site repository pushed to GitHub (public or private)
+- Your site repository pushed to GitHub
+- [Node.js](https://nodejs.org) installed (v18 or higher)
 - A Cloudflare account — sign up at [cloudflare.com](https://cloudflare.com) if you don't have one
 
-## Step 1 — Push your repo to GitHub
+## Step 1 — Configure wrangler.toml
 
-Cloudflare Pages deploys directly from a Git branch. If you haven't already pushed
-your code, create a new repository on GitHub and push:
+The `wrangler.toml` file at the project root tells Wrangler where your built files
+live. This repo already has it configured, but for reference it should look like this:
 
-```bash
-git remote add origin https://github.com/YOUR_USERNAME/YOUR_REPO.git
-git push -u origin main
+```toml
+name = "dev-tutorials"
+compatibility_date = "2026-04-07"
+
+[assets]
+directory = "./dist"
 ```
 
-<div className="callout callout-tip">
-  <span className="callout-title">Private repos work too</span>
-  <p>
-    You can connect a private GitHub repository. Cloudflare will request read-only
-    access to the specific repo during setup.
-  </p>
-</div>
+The `[assets]` section is the Workers Static Assets format. The old `[site]` format
+was for a legacy product called Workers Sites — do not use it.
 
 ## Step 2 — Log in to Cloudflare
 
-Go to [dash.cloudflare.com](https://dash.cloudflare.com) and sign in.
-If you're new, the sign-up form is on the same page.
+Authenticate Wrangler with your Cloudflare account:
+
+```bash
+npx wrangler login
+```
+
+This opens a browser window. Log in and click **Allow**. Wrangler stores a token
+locally so you don't need to repeat this step.
 
 ![Cloudflare dashboard login page](./cloudflare-login.png)
 
-## Step 3 — Open Workers & Pages
+## Step 3 — Build the site
 
-In the left sidebar, click **Workers & Pages**, then click the **Create** button
-in the top-right corner of the page.
+Generate the static output and Pagefind search index:
 
-On the next screen, select the **Pages** tab, then click **Connect to Git**.
+```bash
+npm run build
+```
 
-## Step 4 — Connect GitHub
+This runs `astro build` followed by `pagefind --site dist`. Both outputs land in
+`dist/` — that's what gets deployed.
 
-Cloudflare will ask you to authorize access to your GitHub account. Click
-**Connect GitHub**, then either grant access to **All repositories** or select
-your specific tutorial repo.
+## Step 4 — Deploy
 
-Once authorized, your repositories appear in a searchable list. Select the repo
-and click **Begin setup**.
+```bash
+npx wrangler deploy
+```
 
-## Step 5 — Configure the build
+Wrangler reads `wrangler.toml`, uploads the contents of `dist/` to Cloudflare's
+network, and prints your live URL:
 
-The build settings page has two required fields. Fill them in exactly as shown:
+```
+Uploaded dev-tutorials (1.23 sec)
+Deployed dev-tutorials triggers (0.42 sec)
+  https://dev-tutorials.YOUR_SUBDOMAIN.workers.dev
+```
 
-| Field | Value |
-|---|---|
-| **Build command** | `npm run build` |
-| **Build output directory** | `dist` |
-
-Then expand **Environment variables** and add one entry:
-
-| Variable | Value |
-|---|---|
-| `NODE_VERSION` | `22` |
+Your site is now live on Cloudflare's global CDN.
 
 <div className="callout callout-tip">
-  <span className="callout-title">Why set NODE_VERSION?</span>
+  <span className="callout-title">First deploy creates the Worker</span>
   <p>
-    Cloudflare Pages defaults to an older Node.js release. This site requires
-    Node 18+ for Astro v6. Setting <code>NODE_VERSION=22</code> pins the build
-    to Node 22 LTS, which Cloudflare Pages fully supports.
+    The first <code>wrangler deploy</code> creates the Worker in your Cloudflare
+    account automatically — no dashboard setup required.
   </p>
 </div>
 
-Leave all other settings at their defaults, then click **Save and Deploy**.
+## Step 5 — Automate deploys with GitHub Actions
 
-## Step 6 — Watch the build
+Rather than running `wrangler deploy` manually, set up a GitHub Action to deploy
+on every push to `main`.
 
-Cloudflare starts a build immediately. The build log streams in real time — you'll
-see it install dependencies, run `astro build`, and then run `pagefind --site dist`
-to generate the search index.
+Create `.github/workflows/deploy.yml`:
 
-A successful build ends with output like:
+```yaml
+name: Deploy
 
+on:
+  push:
+    branches: [main]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm ci
+      - run: npm run build
+      - run: npx wrangler deploy
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
 ```
-Finished in X.XXX seconds
-Build complete. Your site is live at https://YOUR_PROJECT.pages.dev
-```
 
-The whole process typically takes under a minute.
+Then add your API token to GitHub:
 
-## Step 7 — Visit your site
+1. In the Cloudflare dashboard go to **My Profile → API Tokens → Create Token**
+2. Use the **Edit Cloudflare Workers** template
+3. Copy the token
+4. In your GitHub repo go to **Settings → Secrets and variables → Actions**
+5. Add a secret named `CLOUDFLARE_API_TOKEN`
 
-Click the generated `*.pages.dev` URL. Your site is now live on Cloudflare's global
-CDN. Every subsequent push to your `main` branch triggers a new build and deploy
-automatically — no manual steps required.
+Every push to `main` now triggers a build and deploy automatically.
 
-<div className="callout callout-tip">
-  <span className="callout-title">Preview deployments</span>
-  <p>
-    Pushes to any branch <em>other than</em> your production branch create a separate
-    preview URL (e.g. <code>feat-new-tutorial.YOUR_PROJECT.pages.dev</code>). This
-    lets you review changes before merging to main.
-  </p>
-</div>
+## Optional — Custom domain
 
-## Optional — Add a custom domain
+To serve from your own domain instead of `*.workers.dev`:
 
-If you own a domain, you can serve your site from it instead of the generated
-`*.pages.dev` URL:
+1. In the Cloudflare dashboard, open **Workers & Pages** and select your Worker
+2. Go to **Settings → Triggers → Custom Domains**
+3. Click **Add Custom Domain** and enter your domain
 
-1. In your Pages project, go to **Custom domains** → **Set up a custom domain**
-2. Enter your domain (e.g. `tutorials.example.com`)
-3. Cloudflare will add the required DNS record automatically if your domain is
-   already on Cloudflare, or give you a CNAME record to add at your registrar
-
-SSL is provisioned automatically — no certificate management required.
+SSL is provisioned automatically.
 
 ## What gets deployed
 
 The `npm run build` script runs two commands:
 
 ```
-astro build       → generates static HTML/CSS/JS into dist/
-pagefind          → builds the full-text search index into dist/pagefind/
+astro build    → generates static HTML/CSS/JS into dist/
+pagefind       → builds the full-text search index into dist/pagefind/
 ```
 
-Both outputs land in `dist/`, which is what Cloudflare Pages serves. Search works
-on the live site because the Pagefind index files are included in the deployment.
+Both land in `dist/`, which `wrangler deploy` uploads in full. Search works on the
+live site because the Pagefind index files are included in the deployment.
