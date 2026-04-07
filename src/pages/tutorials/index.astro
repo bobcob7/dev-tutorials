@@ -22,7 +22,7 @@ const difficulties = ["beginner", "intermediate", "advanced"] as const;
           <h2 style="text-transform: capitalize">{level}</h2>
           <div class="card-grid">
             {group.map((t) => (
-              <a href={`/tutorials/${t.slug}`} class="tutorial-card">
+              <a href={`/tutorials/${t.id}`} class="tutorial-card">
                 <span class="card-title">{t.data.title}</span>
                 <span class="card-desc">{t.data.description}</span>
                 <div class="card-meta">

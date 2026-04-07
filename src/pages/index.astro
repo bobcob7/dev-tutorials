@@ -19,7 +19,7 @@ const tutorials = (await getCollection("tutorials")).sort(
     <p class="section-label">{tutorials.length} tutorial{tutorials.length !== 1 ? "s" : ""}</p>
     <div class="card-grid">
       {tutorials.map((t) => (
-        <a href={`/tutorials/${t.slug}`} class="tutorial-card">
+        <a href={`/tutorials/${t.id}`} class="tutorial-card">
           <span class="card-title">{t.data.title}</span>
           <span class="card-desc">{t.data.description}</span>
           <div class="card-meta">
