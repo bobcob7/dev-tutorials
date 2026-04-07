@@ -63,22 +63,41 @@ enum STAFF_ORDERS
 Open `src/openrct2/SpriteIds.h`. Find the existing staff order icons and append a new ID
 after the last registered sprite in the G2 block.
 
+<div className="callout callout-info">
+  <span className="callout-title">What is G2 and how do I find the next ID?</span>
+  <p>
+    G2 is OpenRCT2's packed sprite sheet. Every icon gets a sequential integer ID at
+    compile time. Run <code>grep -n 'SPR_STAFF_ORDERS' src/openrct2/SpriteIds.h</code> to
+    list the existing staff-order entries, note the value of the last one, and use
+    that number plus one as your <code>&lt;NEXT_ID&gt;</code>.
+  </p>
+</div>
+
 ```cpp
 SPR_STAFF_ORDERS_SWEEPING      = 5111,
 SPR_STAFF_ORDERS_WATER_FLOWERS = 5112,
 SPR_STAFF_ORDERS_EMPTY_BINS    = 5113,
 SPR_STAFF_ORDERS_MOWING        = 5114,
 // ...
-SPR_STAFF_ORDERS_REPAIR_SCENERY = <NEXT_ID>,  // new
+SPR_STAFF_ORDERS_REPAIR_SCENERY = 5115,  // new — use last value + 1
 ```
 
-Create a 24×24 PNG in `resources/g2/` and register it in `sprites.json`.
+Create a 24×24 PNG in `resources/g2/` and register it in `resources/g2/sprites.json` by
+appending an entry that matches the filename — follow the existing entries as your pattern.
 
 ## Step 3 — Pathfinding
 
 Add `UpdatePatrollingFindBrokenScenery()` to `Staff.cpp`. It follows the same pattern
 as `UpdatePatrollingFindBin()` — check the order flag, walk the tile element stack,
 test the condition (`IsBroken()` instead of bin capacity), and transition state.
+
+OpenRCT2 represents each map tile as a contiguous array of `TileElement` objects — one
+for the ground surface, one for any path, one for each object placed on it, and so on.
+`MapGetFirstElementAt()` returns a pointer to the first element; incrementing the pointer
+walks through the stack, and `IsLastForTile()` signals the end.
+
+`GetNextIsSurface()` returns `true` when the handyman's queued next position is an open
+ground tile with no path — there is nothing to repair there, so we return early.
 
 ```cpp
 bool Staff::UpdatePatrollingFindBrokenScenery()
@@ -108,18 +127,103 @@ bool Staff::UpdatePatrollingFindBrokenScenery()
 
     SetState(PeepState::repairingScenery);
     SubState = 0;
-    SetDestination(tileElement->AsPath()->GetLocation().ToTileStart(), 3);
+    SetDestination(tileElement->AsPath()->GetLocation().ToTileStart(), 3); // 3 = destination tolerance in pixels; matches the bin-emptying value
     return true;
 }
 ```
 
+`IsBroken()` reads a boolean flag on the path addition element that guests set when they
+vandalize an object — there is no damage counter, just a flag.
+
+OpenRCT2 runs each guest and staff member through a state machine every game tick. Each
+`PeepState` value corresponds to an `Update*()` function that is called until the state
+changes. `SubState` is a counter you use to sequence sub-steps within that state (walk to
+target, play animation, apply fix). When `SetState(PeepState::repairingScenery)` fires
+here, the game will call `UpdateRepairingScenery()` — implemented in Step 4 — on every
+subsequent tick until the repair completes and the state reverts to `Patrolling`.
+
 Then call it from the dispatch block at the bottom of `UpdatePatrolling()`.
 
-## Steps 4–9
+## Step 4 — Add the peep state and implement the repair loop
 
-Continue by adding `PeepState::repairingScenery`, implementing `UpdateRepairingScenery()`,
-adding `StaffSceneryRepaired` to the struct, updating `ResetStats()` and `Serialise()`,
-adding the UI checkbox and stats row, writing localisation strings, and exposing
-`sceneryRepaired` in the scripting API.
+Open `src/openrct2/peep/Peep.h` and find the `PeepState` enum. Search for `EmptyingBin`
+and add `RepairingScenery` immediately after it:
 
-Each step follows the equivalent bin-emptying code as its model.
+```cpp
+enum class PeepState : uint8_t
+{
+    // ...
+    EmptyingBin,
+    RepairingScenery,  // new
+    // ...
+};
+```
+
+In `Staff.cpp`, find `UpdateEmptyingBin()` and add `UpdateRepairingScenery()` directly
+below it, using it as your model. The key differences from the bin version:
+
+- The detection already happened in Step 3 — no second scan needed
+- The fix action is `tileElement->AsPath()->SetBroken(false)`
+- Increment `StaffSceneryRepaired` (added in Step 5) when the repair completes
+- Return to `PeepState::Patrolling` when done
+
+Finally, add a `case PeepState::RepairingScenery:` branch to the main update switch in
+`Staff.cpp`. Search for `case PeepState::EmptyingBin:` to find the right place.
+
+## Step 5 — Track and persist the statistic
+
+In `Staff.h`, add the repair counter to the `Staff` struct next to `StaffBinsEmptied`:
+
+```cpp
+uint16_t StaffBinsEmptied;
+uint16_t StaffSceneryRepaired;  // new
+```
+
+Find `ResetStats()` and zero the new field. Then find `Serialise()` — search for
+`StaffBinsEmptied` in `Staff.cpp` — and add a serialisation call for the new field
+immediately after it:
+
+```cpp
+ds(StaffBinsEmptied);
+ds(StaffSceneryRepaired);  // new
+```
+
+The order of `ds()` calls must match between save and load, so position matters.
+
+## Step 6 — Update the UI window
+
+Search for `WIDX_STAFF_ORDERS_EMPTY_BINS` to find the handyman window file under
+`src/openrct2/windows/`.
+
+**Orders tab:** Add a new widget ID for the repair checkbox, then add a checkbox entry
+using the same layout as the existing four. Its label should reference the localisation
+string `STR_STAFF_ORDERS_REPAIR_SCENERY` (added in Step 7). Wire the checkbox to the
+`STAFF_ORDERS_REPAIR_SCENERY` bit flag from Step 1 in the toggle handler.
+
+**Stats tab:** Search for `StaffBinsEmptied` in the same file — the stats tab renders
+each counter as a row. Add an equivalent row for `StaffSceneryRepaired` using
+`STR_STAFF_SCENERY_REPAIRED` (also from Step 7).
+
+## Step 7 — Add localisation strings
+
+Open `data/language/en-GB.txt`. Search for `STR_STAFF_ORDERS_EMPTY_BINS` to find the
+staff order strings block and add:
+
+```
+STR_STAFF_ORDERS_REPAIR_SCENERY     :Repair vandalised scenery
+STR_STAFF_SCENERY_REPAIRED          :Scenery repaired: {INT32}
+```
+
+## Step 8 — Expose the stat in the plugin API
+
+Search for `binsEmptied` in `src/openrct2/scripting/`. The staff entity binding
+exposes each stat as a named read-only property. Add a matching `sceneryRepaired`
+property following the same pattern.
+
+## Step 9 — Add a changelog entry
+
+Add a one-line entry to `distribution/changelog.txt` under the **Feature** heading:
+
+```
+- Feature: Handymen can now repair vandalised path additions when the 'Repair vandalised scenery' order is enabled
+```
