@@ -20,11 +20,37 @@ The free tier covers 100,000 requests per day — plenty for a personal tutorial
 
 ## Prerequisites
 
-- Your site repository pushed to GitHub
-- [Node.js](https://nodejs.org) installed (v18 or higher)
-- A Cloudflare account — sign up at [cloudflare.com](https://cloudflare.com) if you don't have one
+**What you need to know:**
+
+<div className="skill-row">
+  <span className="skill-pill skill-need">Git basics</span>
+  <span className="skill-pill skill-need">npm / Node.js</span>
+  <span className="skill-pill skill-need">Terminal commands</span>
+  <span className="skill-pill skill-noneed">Cloudflare Workers API</span>
+  <span className="skill-pill skill-noneed">Wrangler internals</span>
+</div>
+
+**What you need installed:**
+
+<div className="tools-grid">
+  <div className="tool-card">
+    <span className="tool-name">Node.js</span>
+    <span className="tool-rec">v18 or higher</span>
+    <span className="tool-desc">Runtime for Astro and Wrangler CLI</span>
+  </div>
+  <div className="tool-card">
+    <span className="tool-name">GitHub repo</span>
+    <span className="tool-desc">Your site repository pushed to GitHub</span>
+  </div>
+  <div className="tool-card">
+    <span className="tool-name">Cloudflare account</span>
+    <span className="tool-desc">Free tier at <a href="https://cloudflare.com">cloudflare.com</a></span>
+  </div>
+</div>
 
 ## Step 1 — Configure wrangler.toml
+
+<span className="step-badge">Step 1 of 5</span>
 
 The `wrangler.toml` file at the project root tells Wrangler where your built files
 live. This repo already has it configured, but for reference it should look like this:
@@ -42,6 +68,8 @@ was for a legacy product called Workers Sites — do not use it.
 
 ## Step 2 — Log in to Cloudflare
 
+<span className="step-badge">Step 2 of 5</span>
+
 Authenticate Wrangler with your Cloudflare account:
 
 ```bash
@@ -55,6 +83,8 @@ locally so you don't need to repeat this step.
 
 ## Step 3 — Build the site
 
+<span className="step-badge">Step 3 of 5</span>
+
 Generate the static output and Pagefind search index:
 
 ```bash
@@ -65,6 +95,8 @@ This runs `astro build` followed by `pagefind --site dist`. Both outputs land in
 `dist/` — that's what gets deployed.
 
 ## Step 4 — Deploy
+
+<span className="step-badge">Step 4 of 5</span>
 
 ```bash
 npx wrangler deploy
@@ -90,6 +122,8 @@ Your site is now live on Cloudflare's global CDN.
 </div>
 
 ## Step 5 — Connect GitHub for automatic deploys
+
+<span className="step-badge">Step 5 of 5</span>
 
 Rather than running `wrangler deploy` manually on every change, connect your GitHub
 repository through the Cloudflare dashboard for automatic deploys on every push.

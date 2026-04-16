@@ -1,0 +1,1577 @@
+---
+title: "Asteroid Dodger: Menu, Settings, and Spatial Grid"
+description: "Add a title screen, rebindable controls, high score tracking, and a spatial grid optimization to your Rust asteroid dodger."
+difficulty: intermediate
+topics: ["Rust", "macroquad", "game dev", "UI", "optimization"]
+publishDate: 2026-04-12
+---
+
+This tutorial picks up where the [sound and particles tutorial](/tutorials/rust-macroquad-sound-particles) left off. The game plays well — asteroids collide, split, and explode with particles and sound — but it starts immediately with no title screen, offers no way to change controls or volume, and the O(n^2) collision loop slows down as asteroids pile up.
+
+By the end you will have a main menu, a settings screen with rebindable keys and volume control, persistent high score tracking, and a spatial grid that cuts the collision workload dramatically.
+
+## What you'll add
+
+- Spatial grid to reduce collision pair checks from O(n^2) to near-linear
+- Main menu with play, settings, and exit
+- Rebindable keybindings and a volume slider
+- High score tracking across rounds
+
+## Milestones overview
+
+<div className="steps-grid">
+  <div className="step-card">
+    <span className="step-num">Milestone 1</span>
+    <span className="step-name">Spatial Grid</span>
+    <span className="step-desc">Grid struct and collision integration</span>
+  </div>
+  <div className="step-card">
+    <span className="step-num">Milestone 2</span>
+    <span className="step-name">Main Menu</span>
+    <span className="step-desc">Title screen, game over, high score</span>
+  </div>
+  <div className="step-card">
+    <span className="step-num">Milestone 3</span>
+    <span className="step-name">Keybindings</span>
+    <span className="step-desc">Action enum, rebindable controls</span>
+  </div>
+  <div className="step-card">
+    <span className="step-num">Milestone 4</span>
+    <span className="step-name">High Score</span>
+    <span className="step-desc">Live tracking on HUD and menu</span>
+  </div>
+</div>
+
+## Prerequisites
+
+- Completed the [sound and particles tutorial](/tutorials/rust-macroquad-sound-particles)
+- Project compiles and runs with sound effects and particle bursts
+
+---
+
+## Milestone 1 — Spatial grid
+
+<span className="step-badge">Milestone 1 of 4</span>
+
+The existing `resolve_collisions` function checks every asteroid against every other asteroid. With 30 asteroids that is 435 pairs; with 100 it is 4,950. A spatial grid divides the screen into cells and only checks asteroids that share a cell — a huge reduction for spread-out objects.
+
+### Step 1 — Create `src/grid.rs`
+
+Create the file and register it in `main.rs`:
+
+```rust
+mod grid;
+```
+
+The `Grid` stores a flat `Vec` of cells, each holding indices of asteroids whose bounding circles overlap that cell.
+
+```rust
+// src/grid.rs
+pub struct Grid {
+    cell_size: f32,
+    cols: usize,
+    rows: usize,
+    cells: Vec<Vec<usize>>,
+}
+
+impl Grid {
+    pub fn new(width: f32, height: f32, cell_size: f32) -> Self {
+        let cols = (width / cell_size).ceil() as usize + 1;
+        let rows = (height / cell_size).ceil() as usize + 1;
+        let cells = vec![Vec::new(); cols * rows];
+        Self { cell_size, cols, rows, cells }
+    }
+
+    pub fn clear(&mut self) {
+        for cell in &mut self.cells {
+            cell.clear();
+        }
+    }
+
+    pub fn insert(&mut self, index: usize, x: f32, y: f32, radius: f32) {
+        let min_col = ((x - radius) / self.cell_size).floor().max(0.0) as usize;
+        let max_col = ((x + radius) / self.cell_size).floor().max(0.0) as usize;
+        let min_row = ((y - radius) / self.cell_size).floor().max(0.0) as usize;
+        let max_row = ((y + radius) / self.cell_size).floor().max(0.0) as usize;
+        for row in min_row..=max_row.min(self.rows - 1) {
+            for col in min_col..=max_col.min(self.cols - 1) {
+                self.cells[row * self.cols + col].push(index);
+            }
+        }
+    }
+
+    pub fn potential_pairs(&self) -> Vec<(usize, usize)> {
+        let mut pairs = Vec::new();
+        for cell in &self.cells {
+            for a in 0..cell.len() {
+                for b in (a + 1)..cell.len() {
+                    let pair = if cell[a] < cell[b] {
+                        (cell[a], cell[b])
+                    } else {
+                        (cell[b], cell[a])
+                    };
+                    if !pairs.contains(&pair) {
+                        pairs.push(pair);
+                    }
+                }
+            }
+        }
+        pairs
+    }
+}
+```
+
+`insert` maps the asteroid's bounding circle to a range of grid cells and adds its index to each one. An asteroid near a cell boundary ends up in multiple cells, which is correct — it might collide with neighbours in any of them.
+
+`potential_pairs` walks every cell and collects `(i, j)` pairs where `i < j`, deduplicating as it goes. The result is a much smaller list than the full n^2 set.
+
+<div className="callout callout-tip">
+  <span className="callout-title">Cell size tradeoffs</span>
+  <p>
+    The cell size should be slightly larger than the largest object diameter.
+    The max asteroid radius is 50, so the diameter is 100 — a cell size of
+    <code>120.0</code> gives some headroom. Too small and large asteroids span
+    many cells, bloating the insert cost. Too large and cells contain too many
+    objects, losing the benefit of spatial partitioning.
+  </p>
+</div>
+
+### Step 2 — Integrate the grid into collision resolution
+
+First, update `resolve_collisions` in `src/asteroid.rs` to accept a list of pairs instead of scanning all combinations:
+
+```rust
+pub fn resolve_collisions(asteroids: &mut [Asteroid], pairs: &[(usize, usize)]) {
+    for &(i, j) in pairs {
+        if i >= asteroids.len() || j >= asteroids.len() { continue; }
+
+        let (left, right) = asteroids.split_at_mut(j);
+        let a = &mut left[i];
+        let b = &mut right[0];
+
+        if !a.aabb().overlaps(&b.aabb()) { continue; }
+
+        let dist = a.pos.distance(b.pos);
+        let min_dist = a.radius + b.radius;
+        if dist >= min_dist || dist < 0.001 { continue; }
+
+        let normal = (b.pos - a.pos) / dist;
+        let vel_along = (a.vel - b.vel).dot(normal);
+        if vel_along <= 0.0 { continue; }
+
+        let ma = a.mass();
+        let mb = b.mass();
+        let j_imp = 2.0 * vel_along / (1.0 / ma + 1.0 / mb);
+        a.vel -= normal * (j_imp / ma);
+        b.vel += normal * (j_imp / mb);
+
+        let overlap = min_dist - dist;
+        let correction = normal * overlap * 0.5;
+        a.pos -= correction;
+        b.pos += correction;
+    }
+}
+```
+
+The bounds check `if i >= asteroids.len() || j >= asteroids.len()` guards against stale indices — asteroids can be removed by bullets between grid insertion and collision resolution.
+
+Now add a `grid: Grid` field to `Game` in `src/game.rs`. Create it in `new()` and `reset()`:
+
+```rust
+use crate::grid::Grid;
+
+// In Game struct:
+grid: Grid,
+
+// In new():
+grid: Grid::new(screen_width(), screen_height(), 120.0),
+
+// In reset():
+self.grid = Grid::new(screen_width(), screen_height(), 120.0);
+```
+
+Replace the direct `resolve_collisions` call in `update()` with the grid-based version:
+
+```rust
+self.grid.clear();
+for (i, asteroid) in self.asteroids.iter().enumerate() {
+    self.grid.insert(i, asteroid.pos.x, asteroid.pos.y, asteroid.radius);
+}
+let pairs = self.grid.potential_pairs();
+asteroid::resolve_collisions(&mut self.asteroids, &pairs);
+```
+
+<div className="callout callout-tip">
+  <span className="callout-title">Run it</span>
+  <p>
+    <code>cargo run</code> — behaviour is identical to before, but the collision
+    system now scales much better. With 50+ asteroids the frame rate should hold
+    noticeably steadier.
+  </p>
+</div>
+
+---
+
+## Milestone 2 — Menu screen
+
+<span className="step-badge">Milestone 2 of 4</span>
+
+Right now the game drops straight into gameplay. This milestone adds a title screen, a proper game-over screen, and high score tracking.
+
+### Step 3 — Add menu and game-over states
+
+Expand the `GameState` enum in `src/game.rs`:
+
+```rust
+#[derive(PartialEq)]
+enum GameState {
+    Menu,
+    Playing,
+    GameOver,
+    Settings,
+    AwaitingKey(Action),
+}
+```
+
+`Settings` and `AwaitingKey` won't be used until Milestone 3, but adding them now avoids revisiting the enum later.
+
+Add a `high_score: u32` field to `Game`:
+
+```rust
+// In Game struct:
+high_score: u32,
+
+// In new():
+high_score: 0,
+```
+
+Change the initial state from `Playing` to `Menu`:
+
+```rust
+state: GameState::Menu,
+```
+
+Add a `reset` method that restores gameplay state without losing `high_score` or `keybindings`:
+
+```rust
+pub fn reset(&mut self) {
+    self.player = Player::new();
+    self.asteroids.clear();
+    self.bullets.clear();
+    self.score = 0.0;
+    self.spawn_timer = 0.0;
+    self.spawn_interval = 3.0;
+    self.shoot_cooldown = 0.0;
+    self.state = GameState::Playing;
+    self.particles = Particles::new();
+    self.grid = Grid::new(screen_width(), screen_height(), 120.0);
+}
+```
+
+Update the beginning of `update()` to handle menu and game-over input:
+
+```rust
+pub fn update(&mut self, dt: f32) {
+    match &self.state {
+        GameState::Menu => {
+            if is_key_pressed(KeyCode::Enter) {
+                self.reset();
+                self.state = GameState::Playing;
+            }
+            if is_key_pressed(KeyCode::S) {
+                self.state = GameState::Settings;
+            }
+            if is_key_pressed(KeyCode::Escape) {
+                std::process::exit(0);
+            }
+            return;
+        }
+        GameState::GameOver => {
+            let final_score = self.score as u32;
+            if final_score > self.high_score {
+                self.high_score = final_score;
+            }
+            if is_key_pressed(KeyCode::R) {
+                self.reset();
+            }
+            if is_key_pressed(KeyCode::Escape) {
+                self.state = GameState::Menu;
+            }
+            return;
+        }
+        GameState::Settings | GameState::AwaitingKey(_) => {
+            self.update_settings();
+            return;
+        }
+        GameState::Playing => {}
+    }
+
+    // ... rest of Playing update unchanged
+}
+```
+
+Add the menu and game-over drawing functions:
+
+```rust
+fn draw_menu(&self) {
+    let cx = screen_width() / 2.0;
+    let cy = screen_height() / 2.0;
+    draw_text("ASTEROID DODGER", cx - 220.0, cy - 80.0, 52.0, WHITE);
+    draw_text("[Enter] Play", cx - 70.0, cy, 28.0, GREEN);
+    draw_text("[S] Settings", cx - 70.0, cy + 40.0, 28.0, LIGHTGRAY);
+    draw_text("[Esc] Exit", cx - 60.0, cy + 80.0, 28.0, GRAY);
+    if self.high_score > 0 {
+        draw_text(
+            &format!("High Score: {}", self.high_score),
+            cx - 90.0, cy + 140.0, 24.0, YELLOW,
+        );
+    }
+}
+
+fn draw_game_over(&self) {
+    let cx = screen_width() / 2.0;
+    let cy = screen_height() / 2.0;
+    let final_score = self.score as u32;
+    let msg = format!("Game Over — Score: {}", final_score);
+    draw_text(&msg, cx - 180.0, cy, 40.0, WHITE);
+    if final_score >= self.high_score {
+        draw_text("NEW HIGH SCORE!", cx - 110.0, cy + 40.0, 28.0, YELLOW);
+    }
+    draw_text("[R] Restart   [Esc] Menu", cx - 150.0, cy + 80.0, 24.0, GRAY);
+}
+```
+
+Update `draw()` to dispatch based on state:
+
+```rust
+pub fn draw(&self) {
+    clear_background(BLACK);
+    match &self.state {
+        GameState::Menu => { self.draw_menu(); return; }
+        GameState::Settings | GameState::AwaitingKey(_) => {
+            self.draw_settings();
+            return;
+        }
+        _ => {}
+    }
+
+    // ... existing gameplay drawing code ...
+
+    if self.state == GameState::GameOver {
+        self.draw_game_over();
+    }
+}
+```
+
+<div className="callout callout-tip">
+  <span className="callout-title">Run it</span>
+  <p>
+    <code>cargo run</code> — the game opens to a title screen. Press Enter to play,
+    die, and see the game-over screen with R to restart or Esc to return to the menu.
+  </p>
+</div>
+
+---
+
+## Milestone 3 — Keybindings
+
+<span className="step-badge">Milestone 3 of 4</span>
+
+Hardcoded keys work, but players expect to remap controls. This milestone defines an `Action` enum, a `Keybindings` struct, and a settings screen to rebind them.
+
+### Step 4 — Define `Action` and `Keybindings`
+
+Add the `Action` enum and `Keybindings` struct at the top of `src/game.rs`, above the `GameState` enum. They need to be `pub` because `player.rs` will import `Keybindings`.
+
+```rust
+#[derive(Clone, Copy, PartialEq)]
+pub enum Action {
+    Thrust,
+    RotateLeft,
+    RotateRight,
+    Shoot,
+}
+
+impl Action {
+    pub const ALL: [Action; 4] = [
+        Action::Thrust,
+        Action::RotateLeft,
+        Action::RotateRight,
+        Action::Shoot,
+    ];
+
+    pub fn label(&self) -> &'static str {
+        match self {
+            Action::Thrust => "Thrust",
+            Action::RotateLeft => "Rotate Left",
+            Action::RotateRight => "Rotate Right",
+            Action::Shoot => "Shoot",
+        }
+    }
+}
+
+pub struct Keybindings {
+    pub thrust: KeyCode,
+    pub rotate_left: KeyCode,
+    pub rotate_right: KeyCode,
+    pub shoot: KeyCode,
+}
+
+impl Keybindings {
+    pub fn default_bindings() -> Self {
+        Self {
+            thrust: KeyCode::W,
+            rotate_left: KeyCode::A,
+            rotate_right: KeyCode::D,
+            shoot: KeyCode::Space,
+        }
+    }
+
+    pub fn key_for(&self, action: Action) -> KeyCode {
+        match action {
+            Action::Thrust => self.thrust,
+            Action::RotateLeft => self.rotate_left,
+            Action::RotateRight => self.rotate_right,
+            Action::Shoot => self.shoot,
+        }
+    }
+
+    pub fn set_key(&mut self, action: Action, key: KeyCode) {
+        match action {
+            Action::Thrust => self.thrust = key,
+            Action::RotateLeft => self.rotate_left = key,
+            Action::RotateRight => self.rotate_right = key,
+            Action::Shoot => self.shoot = key,
+        }
+    }
+}
+```
+
+Add `keybindings: Keybindings` to the `Game` struct, initialised with `Keybindings::default_bindings()` in `new()`.
+
+<div className="callout callout-tip">
+  <span className="callout-title">Why a struct instead of a HashMap?</span>
+  <p>
+    With only four actions, a flat struct with named fields is simpler, faster, and
+    gives you compile-time guarantees that every action has a binding. A
+    <code>HashMap&lt;Action, KeyCode&gt;</code> would need hashing, allocation, and
+    runtime checks for missing keys — overkill here.
+  </p>
+</div>
+
+Now update `src/player.rs` to use the keybindings instead of hardcoded keys. Add the import and change the `update` signature:
+
+```rust
+use crate::game::Keybindings;
+
+// Change the update method signature:
+pub fn update(&mut self, dt: f32, keys: &Keybindings) {
+    if is_key_down(keys.rotate_left) { self.angle -= ROTATE_SPEED * dt; }
+    if is_key_down(keys.rotate_right) { self.angle += ROTATE_SPEED * dt; }
+
+    if is_key_down(keys.thrust) {
+        self.vel += Vec2::from_angle(self.angle) * THRUST * dt;
+    }
+
+    // ... rest unchanged
+}
+```
+
+Update the call site in `game.rs`:
+
+```rust
+self.player.update(dt, &self.keybindings);
+```
+
+And update the shoot check to use the keybinding:
+
+```rust
+if is_key_down(self.keybindings.shoot) && self.shoot_cooldown <= 0.0 {
+```
+
+<div className="callout callout-tip">
+  <span className="callout-title">Circular imports?</span>
+  <p>
+    <code>player.rs</code> imports <code>Keybindings</code> from <code>game.rs</code>,
+    while <code>game.rs</code> imports <code>Player</code> from <code>player.rs</code>.
+    In Rust this is perfectly fine — modules within the same crate can reference each
+    other freely. The compiler resolves everything in one pass across the crate.
+  </p>
+</div>
+
+### Step 5 — Settings screen
+
+Add the `update_settings` and `draw_settings` methods to `Game`:
+
+```rust
+fn update_settings(&mut self) {
+    if is_key_pressed(KeyCode::Escape) {
+        self.state = GameState::Menu;
+        return;
+    }
+
+    if let GameState::AwaitingKey(action) = self.state {
+        if let Some(key) = get_last_key_pressed() {
+            if key != KeyCode::Escape {
+                self.keybindings.set_key(action, key);
+            }
+            self.state = GameState::Settings;
+        }
+        return;
+    }
+
+    if is_key_pressed(KeyCode::Left) {
+        self.sounds.volume = (self.sounds.volume - 0.1).max(0.0);
+    }
+    if is_key_pressed(KeyCode::Right) {
+        self.sounds.volume = (self.sounds.volume + 0.1).min(1.0);
+    }
+
+    let action_keys = [KeyCode::Key1, KeyCode::Key2, KeyCode::Key3, KeyCode::Key4];
+    for (i, &key) in action_keys.iter().enumerate() {
+        if is_key_pressed(key) {
+            self.state = GameState::AwaitingKey(Action::ALL[i]);
+        }
+    }
+}
+```
+
+The `AwaitingKey` state uses `get_last_key_pressed()` — macroquad's function that returns `Option<KeyCode>`. When the player presses any key it gets assigned to that action. Pressing Escape cancels the rebind.
+
+```rust
+fn draw_settings(&self) {
+    let cx = screen_width() / 2.0;
+    let mut y = 100.0;
+
+    draw_text("SETTINGS", cx - 80.0, y, 40.0, WHITE);
+    y += 60.0;
+
+    draw_text("Volume", cx - 180.0, y, 24.0, LIGHTGRAY);
+    let bar_x = cx - 20.0;
+    let bar_w = 200.0;
+    draw_rectangle(bar_x, y - 14.0, bar_w, 16.0, DARKGRAY);
+    draw_rectangle(bar_x, y - 14.0, bar_w * self.sounds.volume, 16.0, GREEN);
+    draw_rectangle_lines(bar_x, y - 14.0, bar_w, 16.0, 1.0, WHITE);
+    draw_text("[<-/->]", cx + 200.0, y, 18.0, GRAY);
+    y += 50.0;
+
+    draw_text("Keybindings", cx - 180.0, y, 24.0, WHITE);
+    y += 30.0;
+
+    for (i, action) in Action::ALL.iter().enumerate() {
+        let key = self.keybindings.key_for(*action);
+        let key_name = format!("{:?}", key);
+        let label = format!("[{}] {} — {}", i + 1, action.label(), key_name);
+
+        let color = if self.state == GameState::AwaitingKey(*action) {
+            YELLOW
+        } else {
+            LIGHTGRAY
+        };
+
+        draw_text(&label, cx - 180.0, y, 20.0, color);
+
+        if self.state == GameState::AwaitingKey(*action) {
+            draw_text("press any key...", cx + 120.0, y, 18.0, YELLOW);
+        }
+
+        y += 30.0;
+    }
+
+    y += 20.0;
+    draw_text("[Esc] Back", cx - 180.0, y, 20.0, GRAY);
+}
+```
+
+<div className="callout callout-tip">
+  <span className="callout-title">get_last_key_pressed</span>
+  <p>
+    <code>get_last_key_pressed()</code> returns <code>Option&lt;KeyCode&gt;</code> and
+    only fires once per physical press — it won't repeat while held. This makes it
+    ideal for menu input and key rebinding where you want exactly one event per press.
+  </p>
+</div>
+
+<div className="callout callout-tip">
+  <span className="callout-title">Run it</span>
+  <p>
+    <code>cargo run</code> — from the menu, press S to open settings. Use arrow keys
+    to adjust volume. Press 1-4 to rebind an action, then press the new key. Esc returns
+    to the menu. Start a game and verify the new bindings work.
+  </p>
+</div>
+
+---
+
+## Milestone 4 — High score
+
+<span className="step-badge">Milestone 4 of 4</span>
+
+The high score is already tracked across rounds, but it only updates at game over. This milestone makes it update live and displays it on the HUD.
+
+### Step 6 — Live high score on the HUD
+
+In `update()`, after incrementing the score during `Playing`, update the high score in real time:
+
+```rust
+let current_score = self.score as u32;
+if current_score > self.high_score {
+    self.high_score = current_score;
+}
+```
+
+In `draw()`, show the best score alongside the current score during gameplay:
+
+```rust
+draw_text(
+    &format!("Best: {}", self.high_score),
+    screen_width() - 120.0, 48.0, 20.0, GRAY,
+);
+```
+
+The menu already shows the high score when it's greater than zero (from Step 3), and the game-over screen shows "NEW HIGH SCORE!" when beaten. With the live update, the player sees their best score at all times.
+
+<div className="callout callout-tip">
+  <span className="callout-title">Run it</span>
+  <p>
+    <code>cargo run</code> — play a round and watch the "Best:" counter on the HUD.
+    Die, restart, and notice the high score persists. It also shows on the main menu.
+  </p>
+</div>
+
+---
+
+## Complete listing
+
+The project now has nine source files:
+
+```
+src/
+├── main.rs
+├── collision.rs
+├── player.rs
+├── asteroid.rs
+├── bullet.rs
+├── game.rs
+├── sound.rs
+├── particle.rs
+└── grid.rs
+```
+
+**`src/collision.rs`** and **`src/bullet.rs`** are unchanged from the previous tutorial.
+
+**`src/main.rs`**
+
+```rust
+use macroquad::prelude::*;
+
+mod collision;
+mod player;
+mod asteroid;
+mod bullet;
+mod game;
+mod sound;
+mod particle;
+mod grid;
+
+use game::Game;
+use sound::Sounds;
+
+#[macroquad::main("Asteroid Dodger")]
+async fn main() {
+    let sounds = Sounds::load().await;
+    let mut game = Game::new(sounds);
+    loop {
+        game.update(get_frame_time());
+        game.draw();
+        next_frame().await;
+    }
+}
+```
+
+**`src/grid.rs`**
+
+```rust
+pub struct Grid {
+    cell_size: f32,
+    cols: usize,
+    rows: usize,
+    cells: Vec<Vec<usize>>,
+}
+
+impl Grid {
+    pub fn new(width: f32, height: f32, cell_size: f32) -> Self {
+        let cols = (width / cell_size).ceil() as usize + 1;
+        let rows = (height / cell_size).ceil() as usize + 1;
+        let cells = vec![Vec::new(); cols * rows];
+        Self { cell_size, cols, rows, cells }
+    }
+
+    pub fn clear(&mut self) {
+        for cell in &mut self.cells {
+            cell.clear();
+        }
+    }
+
+    pub fn insert(&mut self, index: usize, x: f32, y: f32, radius: f32) {
+        let min_col = ((x - radius) / self.cell_size).floor().max(0.0) as usize;
+        let max_col = ((x + radius) / self.cell_size).floor().max(0.0) as usize;
+        let min_row = ((y - radius) / self.cell_size).floor().max(0.0) as usize;
+        let max_row = ((y + radius) / self.cell_size).floor().max(0.0) as usize;
+        for row in min_row..=max_row.min(self.rows - 1) {
+            for col in min_col..=max_col.min(self.cols - 1) {
+                self.cells[row * self.cols + col].push(index);
+            }
+        }
+    }
+
+    pub fn potential_pairs(&self) -> Vec<(usize, usize)> {
+        let mut pairs = Vec::new();
+        for cell in &self.cells {
+            for a in 0..cell.len() {
+                for b in (a + 1)..cell.len() {
+                    let pair = if cell[a] < cell[b] {
+                        (cell[a], cell[b])
+                    } else {
+                        (cell[b], cell[a])
+                    };
+                    if !pairs.contains(&pair) {
+                        pairs.push(pair);
+                    }
+                }
+            }
+        }
+        pairs
+    }
+}
+```
+
+**`src/sound.rs`**
+
+```rust
+use macroquad::audio::{Sound, load_sound_from_bytes, play_sound, PlaySoundParams};
+
+const SAMPLE_RATE: u32 = 44100;
+
+fn generate_wav(samples: &[i16]) -> Vec<u8> {
+    let data_len = (samples.len() * 2) as u32;
+    let file_len = 36 + data_len;
+    let mut buf = Vec::with_capacity(file_len as usize + 8);
+    buf.extend_from_slice(b"RIFF");
+    buf.extend_from_slice(&file_len.to_le_bytes());
+    buf.extend_from_slice(b"WAVE");
+    buf.extend_from_slice(b"fmt ");
+    buf.extend_from_slice(&16u32.to_le_bytes());
+    buf.extend_from_slice(&1u16.to_le_bytes());
+    buf.extend_from_slice(&1u16.to_le_bytes());
+    buf.extend_from_slice(&SAMPLE_RATE.to_le_bytes());
+    buf.extend_from_slice(&(SAMPLE_RATE * 2).to_le_bytes());
+    buf.extend_from_slice(&2u16.to_le_bytes());
+    buf.extend_from_slice(&16u16.to_le_bytes());
+    buf.extend_from_slice(b"data");
+    buf.extend_from_slice(&data_len.to_le_bytes());
+    for &s in samples {
+        buf.extend_from_slice(&s.to_le_bytes());
+    }
+    buf
+}
+
+fn sine_samples(freq: f32, duration: f32, volume: f32) -> Vec<i16> {
+    let n = (SAMPLE_RATE as f32 * duration) as usize;
+    (0..n)
+        .map(|i| {
+            let t = i as f32 / SAMPLE_RATE as f32;
+            let fade = 1.0 - (t / duration);
+            let sample = (t * freq * std::f32::consts::TAU).sin() * volume * fade;
+            (sample * i16::MAX as f32) as i16
+        })
+        .collect()
+}
+
+fn noise_samples(duration: f32, volume: f32) -> Vec<i16> {
+    let n = (SAMPLE_RATE as f32 * duration) as usize;
+    (0..n)
+        .map(|i| {
+            let t = i as f32 / SAMPLE_RATE as f32;
+            let fade = 1.0 - (t / duration);
+            let noise = macroquad::rand::gen_range(-1.0f32, 1.0);
+            (noise * volume * fade * i16::MAX as f32) as i16
+        })
+        .collect()
+}
+
+pub struct Sounds {
+    pub shoot: Sound,
+    pub explode: Sound,
+    pub damage: Sound,
+    pub thrust: Sound,
+    pub volume: f32,
+}
+
+impl Sounds {
+    pub async fn load() -> Self {
+        let shoot_wav = generate_wav(&sine_samples(880.0, 0.08, 0.3));
+        let explode_wav = generate_wav(&noise_samples(0.2, 0.4));
+        let damage_wav = generate_wav(&sine_samples(220.0, 0.25, 0.5));
+        let thrust_wav = generate_wav(&noise_samples(0.1, 0.15));
+        Self {
+            shoot: load_sound_from_bytes(&shoot_wav).await.unwrap(),
+            explode: load_sound_from_bytes(&explode_wav).await.unwrap(),
+            damage: load_sound_from_bytes(&damage_wav).await.unwrap(),
+            thrust: load_sound_from_bytes(&thrust_wav).await.unwrap(),
+            volume: 0.5,
+        }
+    }
+
+    pub fn play(&self, sound: &Sound) {
+        play_sound(sound, PlaySoundParams { looped: false, volume: self.volume });
+    }
+}
+```
+
+**`src/particle.rs`**
+
+```rust
+use macroquad::prelude::*;
+
+pub struct Particle {
+    pos: Vec2,
+    vel: Vec2,
+    lifetime: f32,
+    max_lifetime: f32,
+    radius: f32,
+    color: Color,
+}
+
+impl Particle {
+    pub fn new(pos: Vec2, vel: Vec2, lifetime: f32, radius: f32, color: Color) -> Self {
+        Self { pos, vel, lifetime, max_lifetime: lifetime, radius, color }
+    }
+
+    pub fn is_alive(&self) -> bool {
+        self.lifetime > 0.0
+    }
+}
+
+pub struct Particles {
+    pool: Vec<Particle>,
+}
+
+impl Particles {
+    pub fn new() -> Self {
+        Self { pool: Vec::new() }
+    }
+
+    pub fn update(&mut self, dt: f32) {
+        for p in &mut self.pool {
+            p.pos += p.vel * dt;
+            p.vel *= 1.0 - 3.0 * dt;
+            p.lifetime -= dt;
+        }
+        self.pool.retain(|p| p.is_alive());
+    }
+
+    pub fn draw(&self) {
+        for p in &self.pool {
+            let t = p.lifetime / p.max_lifetime;
+            let r = p.radius * t;
+            let mut c = p.color;
+            c.a = t;
+            draw_circle(p.pos.x, p.pos.y, r, c);
+        }
+    }
+
+    pub fn burst(&mut self, pos: Vec2, count: usize, speed: f32, color: Color) {
+        for _ in 0..count {
+            let angle = rand::gen_range(0.0f32, std::f32::consts::TAU);
+            let spd = rand::gen_range(speed * 0.3, speed);
+            let vel = Vec2::from_angle(angle) * spd;
+            let lifetime = rand::gen_range(0.3f32, 0.8);
+            let radius = rand::gen_range(1.5f32, 4.0);
+            self.pool.push(Particle::new(pos, vel, lifetime, radius, color));
+        }
+    }
+}
+```
+
+**`src/player.rs`**
+
+```rust
+use macroquad::prelude::*;
+use crate::collision::Aabb;
+use crate::bullet::Bullet;
+use crate::game::Keybindings;
+
+pub const PLAYER_RADIUS: f32 = 16.0;
+pub const PLAYER_MASS: f32 = 500.0;
+
+const THRUST: f32 = 300.0;
+const DRAG: f32 = 1.8;
+const ROTATE_SPEED: f32 = 3.0;
+const MAX_SPEED: f32 = 420.0;
+
+pub struct Player {
+    pub pos: Vec2,
+    pub vel: Vec2,
+    pub hp: f32,
+    pub invincibility: f32,
+    angle: f32,
+}
+
+impl Player {
+    pub fn new() -> Self {
+        Self {
+            pos: Vec2::new(screen_width() / 2.0, screen_height() / 2.0),
+            vel: Vec2::ZERO,
+            hp: 100.0,
+            invincibility: 0.0,
+            angle: -std::f32::consts::FRAC_PI_2,
+        }
+    }
+
+    pub fn update(&mut self, dt: f32, keys: &Keybindings) {
+        if is_key_down(keys.rotate_left) { self.angle -= ROTATE_SPEED * dt; }
+        if is_key_down(keys.rotate_right) { self.angle += ROTATE_SPEED * dt; }
+
+        if is_key_down(keys.thrust) {
+            self.vel += Vec2::from_angle(self.angle) * THRUST * dt;
+        }
+
+        self.vel *= 1.0 - DRAG * dt;
+        if self.vel.length() > MAX_SPEED {
+            self.vel = self.vel.normalize() * MAX_SPEED;
+        }
+
+        self.pos += self.vel * dt;
+
+        let (sw, sh) = (screen_width(), screen_height());
+        if self.pos.x < 0.0 { self.pos.x += sw; }
+        if self.pos.x > sw  { self.pos.x -= sw; }
+        if self.pos.y < 0.0 { self.pos.y += sh; }
+        if self.pos.y > sh  { self.pos.y -= sh; }
+
+        if self.invincibility > 0.0 {
+            self.invincibility -= dt;
+        }
+    }
+
+    pub fn aabb(&self) -> Aabb {
+        Aabb::from_center_radius(self.pos, PLAYER_RADIUS)
+    }
+
+    pub fn spawn_bullet(&self) -> Bullet {
+        let forward = Vec2::from_angle(self.angle);
+        Bullet::new(self.pos + forward * 22.0, self.angle)
+    }
+
+    pub fn draw(&self) {
+        if self.invincibility > 0.0 && (self.invincibility * 8.0) as u32 % 2 == 0 {
+            return;
+        }
+        let forward = Vec2::from_angle(self.angle);
+        let side = Vec2::new(-forward.y, forward.x);
+        draw_triangle(
+            self.pos + forward * 20.0,
+            self.pos - forward * 10.0 + side * 12.0,
+            self.pos - forward * 10.0 - side * 12.0,
+            WHITE,
+        );
+    }
+}
+```
+
+**`src/asteroid.rs`**
+
+```rust
+use macroquad::prelude::*;
+use crate::collision::Aabb;
+
+pub struct Asteroid {
+    pub pos: Vec2,
+    pub vel: Vec2,
+    pub radius: f32,
+    pub vertices: Vec<Vec2>,
+    pub generation: u8,
+}
+
+impl Asteroid {
+    pub fn spawn() -> Self {
+        let (sw, sh) = (screen_width(), screen_height());
+        let pos = match rand::gen_range(0u32, 4) {
+            0 => Vec2::new(rand::gen_range(0.0, sw), -60.0),
+            1 => Vec2::new(sw + 60.0, rand::gen_range(0.0, sh)),
+            2 => Vec2::new(rand::gen_range(0.0, sw), sh + 60.0),
+            _ => Vec2::new(-60.0, rand::gen_range(0.0, sh)),
+        };
+        let target = Vec2::new(
+            sw / 2.0 + rand::gen_range(-150.0f32, 150.0),
+            sh / 2.0 + rand::gen_range(-150.0f32, 150.0),
+        );
+        let dir    = (target - pos).normalize_or_zero();
+        let speed  = rand::gen_range(60.0f32, 160.0);
+        let radius = rand::gen_range(20.0f32, 50.0);
+        let n      = rand::gen_range(7u32, 13) as usize;
+        let vertices = (0..n)
+            .map(|i| {
+                let angle = (i as f32 / n as f32) * std::f32::consts::TAU;
+                let r = radius * rand::gen_range(0.7f32, 1.3);
+                Vec2::from_angle(angle) * r
+            })
+            .collect();
+        Asteroid { pos, vel: dir * speed, radius, vertices, generation: 0 }
+    }
+
+    pub fn spawn_fragment(parent_pos: Vec2, parent_vel: Vec2, parent_radius: f32, kick_dir: Vec2) -> Self {
+        let radius = parent_radius * rand::gen_range(0.45f32, 0.55);
+        let n = rand::gen_range(5u32, 9) as usize;
+        let vertices = (0..n)
+            .map(|i| {
+                let angle = (i as f32 / n as f32) * std::f32::consts::TAU;
+                let r = radius * rand::gen_range(0.7f32, 1.3);
+                Vec2::from_angle(angle) * r
+            })
+            .collect();
+        let vel = parent_vel + kick_dir * rand::gen_range(40.0f32, 100.0);
+        Asteroid {
+            pos: parent_pos + kick_dir * radius,
+            vel,
+            radius,
+            vertices,
+            generation: 1,
+        }
+    }
+
+    pub fn update(&mut self, dt: f32) {
+        self.pos += self.vel * dt;
+    }
+
+    pub fn is_off_screen(&self) -> bool {
+        let margin = 200.0;
+        let (sw, sh) = (screen_width(), screen_height());
+        self.pos.x < -margin || self.pos.x > sw + margin
+            || self.pos.y < -margin || self.pos.y > sh + margin
+    }
+
+    pub fn aabb(&self) -> Aabb {
+        let mut min = Vec2::splat(f32::MAX);
+        let mut max = Vec2::splat(f32::MIN);
+        for v in &self.vertices {
+            let world = self.pos + *v;
+            min = min.min(world);
+            max = max.max(world);
+        }
+        Aabb { min, max }
+    }
+
+    pub fn mass(&self) -> f32 {
+        self.radius * self.radius
+    }
+
+    pub fn draw(&self) {
+        let n = self.vertices.len();
+        for i in 0..n {
+            let a = self.pos + self.vertices[i];
+            let b = self.pos + self.vertices[(i + 1) % n];
+            draw_triangle(self.pos, a, b, GRAY);
+            draw_line(a.x, a.y, b.x, b.y, 1.5, LIGHTGRAY);
+        }
+    }
+}
+
+pub fn resolve_collisions(asteroids: &mut [Asteroid], pairs: &[(usize, usize)]) {
+    for &(i, j) in pairs {
+        if i >= asteroids.len() || j >= asteroids.len() { continue; }
+
+        let (left, right) = asteroids.split_at_mut(j);
+        let a = &mut left[i];
+        let b = &mut right[0];
+
+        if !a.aabb().overlaps(&b.aabb()) { continue; }
+
+        let dist = a.pos.distance(b.pos);
+        let min_dist = a.radius + b.radius;
+        if dist >= min_dist || dist < 0.001 { continue; }
+
+        let normal = (b.pos - a.pos) / dist;
+        let vel_along = (a.vel - b.vel).dot(normal);
+        if vel_along <= 0.0 { continue; }
+
+        let ma = a.mass();
+        let mb = b.mass();
+        let j_imp = 2.0 * vel_along / (1.0 / ma + 1.0 / mb);
+        a.vel -= normal * (j_imp / ma);
+        b.vel += normal * (j_imp / mb);
+
+        let overlap = min_dist - dist;
+        let correction = normal * overlap * 0.5;
+        a.pos -= correction;
+        b.pos += correction;
+    }
+}
+```
+
+**`src/game.rs`**
+
+```rust
+use macroquad::prelude::*;
+use crate::player::{Player, PLAYER_RADIUS, PLAYER_MASS};
+use crate::asteroid::{self, Asteroid};
+use crate::bullet::Bullet;
+use crate::collision;
+use crate::sound::Sounds;
+use crate::particle::Particles;
+use crate::grid::Grid;
+
+#[derive(Clone, Copy, PartialEq)]
+pub enum Action {
+    Thrust,
+    RotateLeft,
+    RotateRight,
+    Shoot,
+}
+
+impl Action {
+    pub const ALL: [Action; 4] = [
+        Action::Thrust,
+        Action::RotateLeft,
+        Action::RotateRight,
+        Action::Shoot,
+    ];
+
+    pub fn label(&self) -> &'static str {
+        match self {
+            Action::Thrust => "Thrust",
+            Action::RotateLeft => "Rotate Left",
+            Action::RotateRight => "Rotate Right",
+            Action::Shoot => "Shoot",
+        }
+    }
+}
+
+pub struct Keybindings {
+    pub thrust: KeyCode,
+    pub rotate_left: KeyCode,
+    pub rotate_right: KeyCode,
+    pub shoot: KeyCode,
+}
+
+impl Keybindings {
+    pub fn default_bindings() -> Self {
+        Self {
+            thrust: KeyCode::W,
+            rotate_left: KeyCode::A,
+            rotate_right: KeyCode::D,
+            shoot: KeyCode::Space,
+        }
+    }
+
+    pub fn key_for(&self, action: Action) -> KeyCode {
+        match action {
+            Action::Thrust => self.thrust,
+            Action::RotateLeft => self.rotate_left,
+            Action::RotateRight => self.rotate_right,
+            Action::Shoot => self.shoot,
+        }
+    }
+
+    pub fn set_key(&mut self, action: Action, key: KeyCode) {
+        match action {
+            Action::Thrust => self.thrust = key,
+            Action::RotateLeft => self.rotate_left = key,
+            Action::RotateRight => self.rotate_right = key,
+            Action::Shoot => self.shoot = key,
+        }
+    }
+}
+
+#[derive(PartialEq)]
+enum GameState {
+    Menu,
+    Playing,
+    GameOver,
+    Settings,
+    AwaitingKey(Action),
+}
+
+pub struct Game {
+    player: Player,
+    asteroids: Vec<Asteroid>,
+    bullets: Vec<Bullet>,
+    score: f32,
+    spawn_timer: f32,
+    spawn_interval: f32,
+    shoot_cooldown: f32,
+    state: GameState,
+    sounds: Sounds,
+    particles: Particles,
+    grid: Grid,
+    keybindings: Keybindings,
+    high_score: u32,
+}
+
+impl Game {
+    pub fn new(sounds: Sounds) -> Self {
+        Self {
+            player: Player::new(),
+            asteroids: Vec::new(),
+            bullets: Vec::new(),
+            score: 0.0,
+            spawn_timer: 0.0,
+            spawn_interval: 3.0,
+            shoot_cooldown: 0.0,
+            state: GameState::Menu,
+            sounds,
+            particles: Particles::new(),
+            grid: Grid::new(screen_width(), screen_height(), 120.0),
+            keybindings: Keybindings::default_bindings(),
+            high_score: 0,
+        }
+    }
+
+    pub fn reset(&mut self) {
+        self.player = Player::new();
+        self.asteroids.clear();
+        self.bullets.clear();
+        self.score = 0.0;
+        self.spawn_timer = 0.0;
+        self.spawn_interval = 3.0;
+        self.shoot_cooldown = 0.0;
+        self.state = GameState::Playing;
+        self.particles = Particles::new();
+        self.grid = Grid::new(screen_width(), screen_height(), 120.0);
+    }
+
+    pub fn update(&mut self, dt: f32) {
+        match &self.state {
+            GameState::Menu => {
+                if is_key_pressed(KeyCode::Enter) {
+                    self.reset();
+                    self.state = GameState::Playing;
+                }
+                if is_key_pressed(KeyCode::S) {
+                    self.state = GameState::Settings;
+                }
+                if is_key_pressed(KeyCode::Escape) {
+                    std::process::exit(0);
+                }
+                return;
+            }
+            GameState::GameOver => {
+                let final_score = self.score as u32;
+                if final_score > self.high_score {
+                    self.high_score = final_score;
+                }
+                if is_key_pressed(KeyCode::R) {
+                    self.reset();
+                }
+                if is_key_pressed(KeyCode::Escape) {
+                    self.state = GameState::Menu;
+                }
+                return;
+            }
+            GameState::Settings | GameState::AwaitingKey(_) => {
+                self.update_settings();
+                return;
+            }
+            GameState::Playing => {}
+        }
+
+        self.player.update(dt, &self.keybindings);
+        self.score += dt;
+
+        if is_key_down(self.keybindings.thrust) {
+            self.sounds.play(&self.sounds.thrust.clone());
+        }
+
+        self.shoot_cooldown -= dt;
+        if is_key_down(self.keybindings.shoot) && self.shoot_cooldown <= 0.0 {
+            self.bullets.push(self.player.spawn_bullet());
+            self.shoot_cooldown = 0.15;
+            self.sounds.play(&self.sounds.shoot.clone());
+        }
+
+        self.spawn_timer += dt;
+        if self.spawn_timer >= self.spawn_interval {
+            self.spawn_timer = 0.0;
+            self.asteroids.push(Asteroid::spawn());
+            self.spawn_interval = (self.spawn_interval - 0.15).max(0.6);
+        }
+
+        for asteroid in &mut self.asteroids {
+            asteroid.update(dt);
+        }
+
+        self.grid.clear();
+        for (i, asteroid) in self.asteroids.iter().enumerate() {
+            self.grid.insert(i, asteroid.pos.x, asteroid.pos.y, asteroid.radius);
+        }
+        let pairs = self.grid.potential_pairs();
+        asteroid::resolve_collisions(&mut self.asteroids, &pairs);
+
+        self.update_bullets();
+        self.particles.update(dt);
+
+        self.asteroids.retain(|a| !a.is_off_screen());
+        self.update_collisions();
+
+        let current_score = self.score as u32;
+        if current_score > self.high_score {
+            self.high_score = current_score;
+        }
+    }
+
+    fn update_bullets(&mut self) {
+        for bullet in &mut self.bullets {
+            bullet.update(get_frame_time());
+        }
+        self.bullets.retain(|b| !b.is_off_screen());
+
+        let mut asteroids_hit: Vec<usize> = Vec::new();
+        self.bullets.retain(|bullet| {
+            for (i, asteroid) in self.asteroids.iter().enumerate() {
+                if collision::point_in_polygon(bullet.pos, asteroid.pos, &asteroid.vertices) {
+                    if !asteroids_hit.contains(&i) {
+                        asteroids_hit.push(i);
+                    }
+                    return false;
+                }
+            }
+            true
+        });
+
+        let mut fragments: Vec<Asteroid> = Vec::new();
+        let mut hit_positions: Vec<(Vec2, f32)> = Vec::new();
+        for &i in &asteroids_hit {
+            let asteroid = &self.asteroids[i];
+            hit_positions.push((asteroid.pos, asteroid.radius));
+            if asteroid.generation == 0 {
+                let spread = Vec2::from_angle(rand::gen_range(0.0f32, std::f32::consts::TAU));
+                fragments.push(Asteroid::spawn_fragment(
+                    asteroid.pos, asteroid.vel, asteroid.radius, spread,
+                ));
+                fragments.push(Asteroid::spawn_fragment(
+                    asteroid.pos, asteroid.vel, asteroid.radius, -spread,
+                ));
+            }
+        }
+
+        asteroids_hit.sort_unstable();
+        for i in asteroids_hit.into_iter().rev() {
+            self.asteroids.swap_remove(i);
+        }
+        self.asteroids.extend(fragments);
+
+        for &(pos, radius) in &hit_positions {
+            let count = (radius * 0.8) as usize;
+            self.particles.burst(pos, count, radius * 2.0, LIGHTGRAY);
+        }
+        if !hit_positions.is_empty() {
+            self.sounds.play(&self.sounds.explode.clone());
+        }
+    }
+
+    fn update_collisions(&mut self) {
+        let player_aabb = self.player.aabb();
+        let mut player_pos = self.player.pos;
+        let mut player_vel = self.player.vel;
+        let player_invincible = self.player.invincibility > 0.0;
+        let mut took_damage = false;
+
+        for asteroid in &mut self.asteroids {
+            if !player_aabb.overlaps(&asteroid.aabb()) { continue; }
+            if !collision::circle_hits_polygon(
+                player_pos, PLAYER_RADIUS, asteroid.pos, &asteroid.vertices,
+            ) { continue; }
+
+            let normal = (asteroid.pos - player_pos).normalize_or_zero();
+            let vel_along = (player_vel - asteroid.vel).dot(normal);
+
+            if vel_along > 0.0 {
+                let ma = asteroid.mass();
+                let j = 2.0 * vel_along / (1.0 / PLAYER_MASS + 1.0 / ma);
+                player_vel   -= normal * (j / PLAYER_MASS);
+                asteroid.vel += normal * (j / ma);
+
+                let overlap = PLAYER_RADIUS + asteroid.radius
+                    - player_pos.distance(asteroid.pos);
+                if overlap > 0.0 {
+                    let correction = normal * overlap * 0.5;
+                    player_pos   -= correction;
+                    asteroid.pos += correction;
+                }
+            }
+
+            if !player_invincible {
+                took_damage = true;
+            }
+        }
+
+        self.player.pos = player_pos;
+        self.player.vel = player_vel;
+
+        if took_damage {
+            self.player.hp -= 20.0;
+            self.player.invincibility = 1.5;
+            self.particles.burst(self.player.pos, 12, 80.0, ORANGE);
+            self.sounds.play(&self.sounds.damage.clone());
+            if self.player.hp <= 0.0 {
+                self.state = GameState::GameOver;
+            }
+        }
+    }
+
+    fn update_settings(&mut self) {
+        if is_key_pressed(KeyCode::Escape) {
+            self.state = GameState::Menu;
+            return;
+        }
+
+        if let GameState::AwaitingKey(action) = self.state {
+            if let Some(key) = get_last_key_pressed() {
+                if key != KeyCode::Escape {
+                    self.keybindings.set_key(action, key);
+                }
+                self.state = GameState::Settings;
+            }
+            return;
+        }
+
+        if is_key_pressed(KeyCode::Left) {
+            self.sounds.volume = (self.sounds.volume - 0.1).max(0.0);
+        }
+        if is_key_pressed(KeyCode::Right) {
+            self.sounds.volume = (self.sounds.volume + 0.1).min(1.0);
+        }
+
+        let action_keys = [KeyCode::Key1, KeyCode::Key2, KeyCode::Key3, KeyCode::Key4];
+        for (i, &key) in action_keys.iter().enumerate() {
+            if is_key_pressed(key) {
+                self.state = GameState::AwaitingKey(Action::ALL[i]);
+            }
+        }
+    }
+
+    fn draw_menu(&self) {
+        let cx = screen_width() / 2.0;
+        let cy = screen_height() / 2.0;
+        draw_text("ASTEROID DODGER", cx - 220.0, cy - 80.0, 52.0, WHITE);
+        draw_text("[Enter] Play", cx - 70.0, cy, 28.0, GREEN);
+        draw_text("[S] Settings", cx - 70.0, cy + 40.0, 28.0, LIGHTGRAY);
+        draw_text("[Esc] Exit", cx - 60.0, cy + 80.0, 28.0, GRAY);
+        if self.high_score > 0 {
+            draw_text(
+                &format!("High Score: {}", self.high_score),
+                cx - 90.0, cy + 140.0, 24.0, YELLOW,
+            );
+        }
+    }
+
+    fn draw_game_over(&self) {
+        let cx = screen_width() / 2.0;
+        let cy = screen_height() / 2.0;
+        let final_score = self.score as u32;
+        let msg = format!("Game Over — Score: {}", final_score);
+        draw_text(&msg, cx - 180.0, cy, 40.0, WHITE);
+        if final_score >= self.high_score {
+            draw_text("NEW HIGH SCORE!", cx - 110.0, cy + 40.0, 28.0, YELLOW);
+        }
+        draw_text("[R] Restart   [Esc] Menu", cx - 150.0, cy + 80.0, 24.0, GRAY);
+    }
+
+    fn draw_settings(&self) {
+        let cx = screen_width() / 2.0;
+        let mut y = 100.0;
+
+        draw_text("SETTINGS", cx - 80.0, y, 40.0, WHITE);
+        y += 60.0;
+
+        draw_text("Volume", cx - 180.0, y, 24.0, LIGHTGRAY);
+        let bar_x = cx - 20.0;
+        let bar_w = 200.0;
+        draw_rectangle(bar_x, y - 14.0, bar_w, 16.0, DARKGRAY);
+        draw_rectangle(bar_x, y - 14.0, bar_w * self.sounds.volume, 16.0, GREEN);
+        draw_rectangle_lines(bar_x, y - 14.0, bar_w, 16.0, 1.0, WHITE);
+        draw_text("[<-/->]", cx + 200.0, y, 18.0, GRAY);
+        y += 50.0;
+
+        draw_text("Keybindings", cx - 180.0, y, 24.0, WHITE);
+        y += 30.0;
+
+        for (i, action) in Action::ALL.iter().enumerate() {
+            let key = self.keybindings.key_for(*action);
+            let key_name = format!("{:?}", key);
+            let label = format!("[{}] {} — {}", i + 1, action.label(), key_name);
+
+            let color = if self.state == GameState::AwaitingKey(*action) {
+                YELLOW
+            } else {
+                LIGHTGRAY
+            };
+
+            draw_text(&label, cx - 180.0, y, 20.0, color);
+
+            if self.state == GameState::AwaitingKey(*action) {
+                draw_text("press any key...", cx + 120.0, y, 18.0, YELLOW);
+            }
+
+            y += 30.0;
+        }
+
+        y += 20.0;
+        draw_text("[Esc] Back", cx - 180.0, y, 20.0, GRAY);
+    }
+
+    pub fn draw(&self) {
+        clear_background(BLACK);
+        match &self.state {
+            GameState::Menu => { self.draw_menu(); return; }
+            GameState::Settings | GameState::AwaitingKey(_) => {
+                self.draw_settings();
+                return;
+            }
+            _ => {}
+        }
+
+        self.particles.draw();
+
+        for asteroid in &self.asteroids {
+            asteroid.draw();
+        }
+        for bullet in &self.bullets {
+            bullet.draw();
+        }
+        self.player.draw();
+
+        draw_text(
+            &format!("FPS: {}", get_fps()),
+            screen_width() - 90.0, 24.0, 20.0, DARKGREEN,
+        );
+        draw_text(&format!("Score: {}", self.score as u32), 20.0, 24.0, 24.0, WHITE);
+        draw_text(
+            &format!("Best: {}", self.high_score),
+            screen_width() - 120.0, 48.0, 20.0, GRAY,
+        );
+
+        draw_rectangle(20.0, 36.0, 200.0, 16.0, DARKGRAY);
+        let fill_width = 200.0 * (self.player.hp / 100.0).clamp(0.0, 1.0);
+        let bar_color = if self.player.hp > 60.0 { GREEN }
+                        else if self.player.hp > 30.0 { YELLOW }
+                        else { RED };
+        draw_rectangle(20.0, 36.0, fill_width, 16.0, bar_color);
+        draw_rectangle_lines(20.0, 36.0, 200.0, 16.0, 1.5, WHITE);
+
+        if self.state == GameState::GameOver {
+            self.draw_game_over();
+        }
+    }
+}
+```
+
+## Next steps
+
+From here you could extend the game further:
+
+- **Sprite rendering** — replace the vector shapes with PNG sprites using macroquad's `Texture2D`
+- **Persistent high scores** — save and load the best score to a file with `std::fs`
+- **Screen shake** — offset the camera on damage hits for more satisfying feedback
+- **Minimap** — draw a small radar showing off-screen asteroid positions

@@ -1,0 +1,1521 @@
+---
+title: "Asteroid Dodger: Collisions, Shooting, and Physics"
+description: "Add AABB and polygon collision detection, an HP bar, shooting, elastic bounce physics, and asteroid splitting to your Rust asteroid dodger."
+difficulty: intermediate
+topics: ["Rust", "macroquad", "game dev", "physics", "collision detection"]
+publishDate: 2026-04-12
+---
+
+This tutorial picks up where [Build an Asteroid Dodger](/tutorials/rust-macroquad-asteroid-dodger) left off. You have a ship flying through a field of drifting asteroids — but nothing collides. By the end of this tutorial, asteroids will damage the ship, bounce off each other with elastic physics, break into fragments when shot, and push the ship around on contact.
+
+## What you'll add
+
+- Two-phase collision detection (AABB broad phase → polygon narrow phase)
+- HP bar with invincibility frames
+- Game over and restart
+- Bullets that destroy asteroids
+- Elastic asteroid-asteroid bounce physics
+- Elastic ship-asteroid bounce physics
+- Asteroid splitting into fragments
+
+## Milestones overview
+
+<div className="steps-grid">
+  <div className="step-card">
+    <span className="step-num">Milestone 1</span>
+    <span className="step-name">Collision Primitives</span>
+    <span className="step-desc">Aabb struct and collision module</span>
+  </div>
+  <div className="step-card">
+    <span className="step-num">Milestone 2</span>
+    <span className="step-name">Collision & Damage</span>
+    <span className="step-desc">Broad phase, narrow phase, HP bar</span>
+  </div>
+  <div className="step-card">
+    <span className="step-num">Milestone 3</span>
+    <span className="step-name">Game Loop</span>
+    <span className="step-desc">Game over, restart, exact polygon collision</span>
+  </div>
+  <div className="step-card">
+    <span className="step-num">Milestone 4</span>
+    <span className="step-name">Shooting</span>
+    <span className="step-desc">Bullets, hit detection, asteroid destruction</span>
+  </div>
+  <div className="step-card">
+    <span className="step-num">Milestone 5</span>
+    <span className="step-name">Asteroid Physics</span>
+    <span className="step-desc">Mass, elastic bounce, split_at_mut</span>
+  </div>
+  <div className="step-card">
+    <span className="step-num">Milestone 6</span>
+    <span className="step-name">Ship Physics</span>
+    <span className="step-desc">Unified elastic impulse for ship-asteroid hits</span>
+  </div>
+  <div className="step-card">
+    <span className="step-num">Milestone 7</span>
+    <span className="step-name">Broad Phase</span>
+    <span className="step-desc">AABB optimization for asteroid-asteroid physics</span>
+  </div>
+  <div className="step-card">
+    <span className="step-num">Milestone 8</span>
+    <span className="step-name">Splitting</span>
+    <span className="step-desc">Asteroids break into fragments when shot</span>
+  </div>
+</div>
+
+## Prerequisites
+
+- Completed the [base Asteroid Dodger tutorial](/tutorials/rust-macroquad-asteroid-dodger)
+- Project compiles and runs with ship + asteroids
+
+---
+
+## Milestone 1 — Collision primitives
+
+<span className="step-badge">Milestone 1 of 8</span>
+
+### Step 1 — Create `src/collision.rs`
+
+The collision module holds geometry helpers that multiple other modules will use. Create the file and register it in `main.rs`:
+
+```rust
+mod collision;
+```
+
+An **axis-aligned bounding box** is a rectangle whose edges always run parallel to the screen axes — the cheapest possible overlap test.
+
+```rust
+// src/collision.rs
+use macroquad::prelude::Vec2;
+
+pub struct Aabb {
+    pub min: Vec2,
+    pub max: Vec2,
+}
+
+impl Aabb {
+    pub fn from_center_radius(center: Vec2, radius: f32) -> Self {
+        Self {
+            min: center - Vec2::splat(radius),
+            max: center + Vec2::splat(radius),
+        }
+    }
+
+    pub fn overlaps(&self, other: &Aabb) -> bool {
+        self.min.x <= other.max.x && self.max.x >= other.min.x
+            && self.min.y <= other.max.y && self.max.y >= other.min.y
+    }
+}
+```
+
+`Vec2::splat(r)` creates `Vec2::new(r, r)` — a uniform value in both dimensions.
+
+<div className="callout callout-info">
+  <span className="callout-title">pub on fields</span>
+  <p>
+    <code>pub struct Aabb</code> makes the type visible, but Rust independently controls
+    field visibility. Without <code>pub</code> on <code>min</code> and <code>max</code>,
+    other modules could see the type but couldn't read its fields.
+  </p>
+</div>
+
+### Step 2 — Add Aabb to player and asteroid
+
+**`src/player.rs`** — add an Aabb import and a constant for the player's collision radius, plus HP and invincibility fields:
+
+```rust
+use crate::collision::Aabb;
+
+pub const PLAYER_RADIUS: f32 = 16.0;
+```
+
+Add `hp` and `invincibility` fields to the `Player` struct:
+
+```rust
+pub struct Player {
+    pub pos: Vec2,
+    pub vel: Vec2,
+    pub hp: f32,
+    pub invincibility: f32,
+    angle: f32,
+}
+```
+
+Update `new()` to initialise them:
+
+```rust
+hp: 100.0,
+invincibility: 0.0,
+```
+
+Add an `aabb` method to `impl Player`:
+
+```rust
+pub fn aabb(&self) -> Aabb {
+    Aabb::from_center_radius(self.pos, PLAYER_RADIUS)
+}
+```
+
+Add invincibility countdown at the end of `update`:
+
+```rust
+if self.invincibility > 0.0 {
+    self.invincibility -= dt;
+}
+```
+
+Update `draw` to flash during invincibility — add this at the top of the method:
+
+```rust
+pub fn draw(&self) {
+    // Skip every other 1/8 second while invincible
+    if self.invincibility > 0.0 && (self.invincibility * 8.0) as u32 % 2 == 0 {
+        return;
+    }
+    // ... triangle code unchanged
+}
+```
+
+**`src/asteroid.rs`** — add an Aabb method that fits tightly around the actual vertices rather than using the base radius:
+
+```rust
+use crate::collision::Aabb;
+```
+
+```rust
+pub fn aabb(&self) -> Aabb {
+    let mut min = Vec2::splat(f32::MAX);
+    let mut max = Vec2::splat(f32::MIN);
+    for v in &self.vertices {
+        let world = self.pos + *v;
+        min = min.min(world);
+        max = max.max(world);
+    }
+    Aabb { min, max }
+}
+```
+
+<div className="callout callout-tip">
+  <span className="callout-title">Run it</span>
+  <p>
+    <code>cargo run</code> — no visible change yet, but the project compiles with the
+    new collision module and Aabb methods in place.
+  </p>
+</div>
+
+---
+
+## Milestone 2 — Collision and damage
+
+<span className="step-badge">Milestone 2 of 8</span>
+
+### Step 3 — Broad-phase collision: bounding boxes
+
+Real-time collision runs in two phases. The **broad phase** quickly rejects pairs using cheap AABB tests. The **narrow phase** runs the expensive exact check only on survivors.
+
+Add to `src/game.rs`:
+
+```rust
+use crate::player::PLAYER_RADIUS;
+use crate::collision;
+```
+
+Add a `state` field and an `update_collisions` method. First add a `GameState` enum and expand the `Game` struct:
+
+```rust
+#[derive(PartialEq)]
+enum GameState {
+    Playing,
+    GameOver,
+}
+
+pub struct Game {
+    player: Player,
+    asteroids: Vec<Asteroid>,
+    score: f32,
+    spawn_timer: f32,
+    spawn_interval: f32,
+    state: GameState,
+}
+
+// In new():
+state: GameState::Playing,
+```
+
+Add `update_collisions` and call it from `update`:
+
+```rust
+fn update_collisions(&mut self) {
+    let player_aabb = self.player.aabb();
+
+    // Copy player values before the loop.
+    // The loop mutably borrows self.asteroids, and the borrow checker
+    // prevents borrowing self.player at the same time — both are fields
+    // of self. Copying into locals sidesteps the conflict; we write back
+    // after the loop ends.
+    let mut player_pos = self.player.pos;
+    let player_invincible = self.player.invincibility > 0.0;
+    let mut took_damage = false;
+
+    for asteroid in &mut self.asteroids {
+        if !player_aabb.overlaps(&asteroid.aabb()) {
+            continue; // broad phase: skip non-overlapping pairs
+        }
+
+        // Treat the asteroid as a circle at 75% radius — places the hitbox
+        // inside the visual shape so collisions feel fair, not cheap
+        let hit_radius = asteroid.radius * 0.75;
+        if player_pos.distance(asteroid.pos) >= PLAYER_RADIUS + hit_radius {
+            continue;
+        }
+
+        if !player_invincible {
+            took_damage = true;
+        }
+    }
+
+    self.player.pos = player_pos;
+
+    if took_damage {
+        self.player.hp -= 20.0;
+        self.player.invincibility = 1.5;
+        if self.player.hp <= 0.0 {
+            self.state = GameState::GameOver;
+        }
+    }
+}
+```
+
+Add the call at the end of `update`:
+
+```rust
+self.asteroids.retain(|a| !a.is_off_screen());
+self.update_collisions();
+```
+
+### Step 4 — HP bar
+
+Add the HP bar to `Game::draw`, after the existing `draw_text` score line:
+
+```rust
+draw_rectangle(20.0, 36.0, 200.0, 16.0, DARKGRAY);
+let fill_width = 200.0 * (self.player.hp / 100.0).clamp(0.0, 1.0);
+let bar_color = if self.player.hp > 60.0 { GREEN }
+                else if self.player.hp > 30.0 { YELLOW }
+                else { RED };
+draw_rectangle(20.0, 36.0, fill_width, 16.0, bar_color);
+draw_rectangle_lines(20.0, 36.0, 200.0, 16.0, 1.5, WHITE);
+```
+
+`draw_rectangle_lines` takes a line-thickness argument that `draw_rectangle` doesn't: `(x, y, w, h, thickness, color)` — six arguments instead of five. The `1.5` here draws a 1.5-pixel border around the bar.
+
+<div className="callout callout-tip">
+  <span className="callout-title">Run it</span>
+  <p>
+    <code>cargo run</code> — fly into asteroids and watch the HP bar shrink. The ship
+    blinks during the invincibility window after each hit.
+  </p>
+</div>
+
+---
+
+## Milestone 3 — Complete game loop
+
+<span className="step-badge">Milestone 3 of 8</span>
+
+### Step 5 — Game over and restart
+
+Add the game-over guard at the top of `update`:
+
+```rust
+pub fn update(&mut self, dt: f32) {
+    if self.state == GameState::GameOver {
+        if is_key_pressed(KeyCode::R) { *self = Game::new(); }
+        return;
+    }
+    // ... rest of update unchanged
+}
+```
+
+`*self = Game::new()` resets the game in one line. `self` is `&mut Game` — a mutable reference to the current `Game`. Dereferencing it with `*self` gives the `Game` value itself, which you can then overwrite with a freshly constructed one. All fields reset atomically.
+
+Add the overlay to `draw`:
+
+```rust
+if self.state == GameState::GameOver {
+    let msg = format!("Game Over — Score: {}", self.score as u32);
+    draw_text(&msg, screen_width() / 2.0 - 180.0, screen_height() / 2.0, 40.0, WHITE);
+    draw_text("Press R to restart", screen_width() / 2.0 - 110.0, screen_height() / 2.0 + 50.0, 24.0, GRAY);
+}
+```
+
+### Step 6 — Exact polygon-circle collision
+
+The circle approximation from Step 3 works but isn't precise. Append these three functions to `src/collision.rs` for exact edge-distance testing:
+
+```rust
+pub fn closest_point_on_segment(a: Vec2, b: Vec2, p: Vec2) -> Vec2 {
+    let ab = b - a;
+    let t = ((p - a).dot(ab) / ab.length_squared()).clamp(0.0, 1.0);
+    a + ab * t
+}
+
+pub fn point_in_polygon(point: Vec2, poly_pos: Vec2, vertices: &[Vec2]) -> bool {
+    let n = vertices.len();
+    let mut inside = false;
+    let mut j = n - 1;
+    for i in 0..n {
+        let vi = poly_pos + vertices[i];
+        let vj = poly_pos + vertices[j];
+        if (vi.y > point.y) != (vj.y > point.y)
+            && point.x < (vj.x - vi.x) * (point.y - vi.y) / (vj.y - vi.y) + vi.x
+        {
+            inside = !inside;
+        }
+        j = i;
+    }
+    inside
+}
+
+pub fn circle_hits_polygon(
+    center: Vec2,
+    radius: f32,
+    poly_pos: Vec2,
+    vertices: &[Vec2],
+) -> bool {
+    let n = vertices.len();
+    for i in 0..n {
+        let a = poly_pos + vertices[i];
+        let b = poly_pos + vertices[(i + 1) % n];
+        if center.distance(closest_point_on_segment(a, b, center)) < radius {
+            return true;
+        }
+    }
+    point_in_polygon(center, poly_pos, vertices)
+}
+```
+
+These take `poly_pos` and `vertices: &[Vec2]` as separate arguments so `collision.rs` stays independent of `asteroid.rs` — if it imported `Asteroid`, those two modules would circularly depend on each other.
+
+In `update_collisions` in `src/game.rs`, replace the circle approximation:
+
+```rust
+// Remove:
+let hit_radius = asteroid.radius * 0.75;
+if player_pos.distance(asteroid.pos) >= PLAYER_RADIUS + hit_radius { continue; }
+
+// Replace with:
+if !collision::circle_hits_polygon(
+    player_pos, PLAYER_RADIUS, asteroid.pos, &asteroid.vertices,
+) { continue; }
+```
+
+### Step 7 — Stop the ship clipping through asteroids
+
+The ship still passes through asteroids on contact. Add positional correction — push the ship out whenever it overlaps.
+
+Inside the collision-passing branch, before the damage check:
+
+```rust
+// Push player fully out of the asteroid
+let normal = (player_pos - asteroid.pos).normalize_or_zero();
+let overlap = PLAYER_RADIUS + asteroid.radius - player_pos.distance(asteroid.pos);
+if overlap > 0.0 {
+    player_pos += normal * overlap;
+}
+```
+
+This stops clipping. The ship doesn't yet bounce away — that comes in Milestone 6.
+
+<div className="callout callout-tip">
+  <span className="callout-title">Run it</span>
+  <p>
+    <code>cargo run</code> — the game now has a full loop: play, get pushed around by
+    asteroids, die, press R to restart. The ship stops at asteroid surfaces rather than
+    passing through them.
+  </p>
+</div>
+
+---
+
+## Milestone 4 — Shooting
+
+<span className="step-badge">Milestone 4 of 8</span>
+
+### Step 8 — Bullet type (`src/bullet.rs`)
+
+Create `src/bullet.rs` and register it in `main.rs`:
+
+```rust
+mod bullet;
+```
+
+```rust
+// src/bullet.rs
+use macroquad::prelude::*;
+
+const SPEED: f32 = 600.0;
+
+pub struct Bullet {
+    pub pos: Vec2,
+    vel: Vec2,
+}
+
+impl Bullet {
+    pub fn new(pos: Vec2, angle: f32) -> Self {
+        Self { pos, vel: Vec2::from_angle(angle) * SPEED }
+    }
+
+    pub fn update(&mut self, dt: f32) {
+        self.pos += self.vel * dt;
+    }
+
+    pub fn is_off_screen(&self) -> bool {
+        let (sw, sh) = (screen_width(), screen_height());
+        self.pos.x < 0.0 || self.pos.x > sw || self.pos.y < 0.0 || self.pos.y > sh
+    }
+
+    pub fn draw(&self) {
+        draw_circle(self.pos.x, self.pos.y, 3.0, YELLOW);
+    }
+}
+```
+
+### Step 9 — Fire and hit detection
+
+**`src/player.rs`** — add `spawn_bullet`. Add the import at the top and the method to `impl Player`:
+
+```rust
+use crate::bullet::Bullet;
+```
+
+```rust
+pub fn spawn_bullet(&self) -> Bullet {
+    let forward = Vec2::from_angle(self.angle);
+    Bullet::new(self.pos + forward * 22.0, self.angle)
+}
+```
+
+The bullet spawns at the tip of the ship and travels in the direction it's facing. `angle` is private, but `spawn_bullet` lives in the same module, so it can access it.
+
+**`src/game.rs`** — add `bullets` and `shoot_cooldown` fields:
+
+```rust
+use crate::bullet::Bullet;
+```
+
+```rust
+pub struct Game {
+    // ... existing fields ...
+    bullets: Vec<Bullet>,
+    shoot_cooldown: f32,
+}
+
+// In new():
+bullets: Vec::new(),
+shoot_cooldown: 0.0,
+```
+
+Add shooting input at the top of `update` (after the game-over guard):
+
+```rust
+self.shoot_cooldown -= dt;
+if is_key_down(KeyCode::Space) && self.shoot_cooldown <= 0.0 {
+    self.bullets.push(self.player.spawn_bullet());
+    self.shoot_cooldown = 0.15; // ~7 shots per second
+}
+```
+
+Add an `update_bullets` method (shown below), then call it from `update` after the asteroid loop and before `self.asteroids.retain`:
+
+```rust
+// In update(), the call order should be:
+for asteroid in &mut self.asteroids {
+    asteroid.update(dt);
+}
+self.update_bullets();              // add this line
+self.asteroids.retain(|a| !a.is_off_screen());
+self.update_collisions();
+```
+
+The method itself:
+
+```rust
+fn update_bullets(&mut self) {
+    for bullet in &mut self.bullets {
+        bullet.update(get_frame_time());
+    }
+    self.bullets.retain(|b| !b.is_off_screen());
+
+    // Find which asteroids were hit
+    let mut asteroids_hit: Vec<usize> = Vec::new();
+    self.bullets.retain(|bullet| {
+        for (i, asteroid) in self.asteroids.iter().enumerate() {
+            if collision::point_in_polygon(bullet.pos, asteroid.pos, &asteroid.vertices) {
+                if !asteroids_hit.contains(&i) {
+                    asteroids_hit.push(i);
+                }
+                return false; // consume the bullet
+            }
+        }
+        true // bullet survives
+    });
+
+    // Remove hit asteroids — iterate in reverse so earlier indices stay valid
+    asteroids_hit.sort_unstable();
+    for i in asteroids_hit.into_iter().rev() {
+        self.asteroids.swap_remove(i);
+    }
+}
+```
+
+Add bullet draw calls to `Game::draw`:
+
+```rust
+for bullet in &self.bullets {
+    bullet.draw();
+}
+```
+
+<div className="callout callout-info">
+  <span className="callout-title">swap_remove</span>
+  <p>
+    <code>Vec::swap_remove(i)</code> removes element <code>i</code> by swapping it with
+    the last element, then popping — O(1) rather than the O(n) shift of
+    <code>remove(i)</code>. Order is not preserved, which is fine for an unordered pool
+    of asteroids. We iterate indices in reverse so that each removal doesn't shift the
+    indices we haven't processed yet.
+  </p>
+</div>
+
+<div className="callout callout-tip">
+  <span className="callout-title">Run it</span>
+  <p>
+    <code>cargo run</code> — hold <strong>Space</strong> to fire. Yellow dots travel
+    in the direction the ship faces and destroy any asteroid they enter.
+  </p>
+</div>
+
+---
+
+## Milestone 5 — Asteroid physics
+
+<span className="step-badge">Milestone 5 of 8</span>
+
+### Step 10 — Give asteroids mass (`src/asteroid.rs`)
+
+Add a `mass` method to `impl Asteroid`. Mass is proportional to radius² — treating each asteroid as a 2D disc with uniform density:
+
+```rust
+pub fn mass(&self) -> f32 {
+    self.radius * self.radius
+}
+```
+
+A small asteroid (radius 20) has mass 400; a large one (radius 50) has mass 2500 — six times heavier. This means large asteroids barely deflect on collision while small ones scatter.
+
+### Step 11 — Elastic asteroid-asteroid collisions (`src/asteroid.rs` + `src/game.rs`)
+
+Add a standalone function to `src/asteroid.rs` (outside `impl Asteroid`) that resolves all pairwise collisions for a slice of asteroids:
+
+```rust
+pub fn resolve_collisions(asteroids: &mut [Asteroid]) {
+    let n = asteroids.len();
+    for i in 0..n {
+        for j in (i + 1)..n {
+            // split_at_mut gives two non-overlapping mutable slices.
+            // Since j > i, asteroids[i] is in `left` and asteroids[j]
+            // is right[0] — the first element of the right half.
+            let (left, right) = asteroids.split_at_mut(j);
+            let a = &mut left[i];
+            let b = &mut right[0];
+
+            let dist = a.pos.distance(b.pos);
+            let min_dist = a.radius + b.radius;
+            if dist >= min_dist || dist < 0.001 { continue; }
+
+            // Unit normal pointing from a to b
+            let normal = (b.pos - a.pos) / dist;
+
+            // Relative velocity of a with respect to b along the normal.
+            // Positive = approaching, negative = separating (skip).
+            let vel_along = (a.vel - b.vel).dot(normal);
+            if vel_along <= 0.0 { continue; }
+
+            // Elastic impulse: restitution = 1 (perfectly bouncy)
+            let ma = a.mass();
+            let mb = b.mass();
+            let j_imp = 2.0 * vel_along / (1.0 / ma + 1.0 / mb);
+            a.vel -= normal * (j_imp / ma);
+            b.vel += normal * (j_imp / mb);
+
+            // Positional correction: push apart so they don't overlap
+            let overlap = min_dist - dist;
+            let correction = normal * overlap * 0.5;
+            a.pos -= correction;
+            b.pos += correction;
+        }
+    }
+}
+```
+
+<div className="callout callout-info">
+  <span className="callout-title">split_at_mut</span>
+  <p>
+    Rust prevents holding two mutable references into the same <code>Vec</code>
+    simultaneously — the borrow checker can't prove they don't alias. 
+    <code>split_at_mut(j)</code> solves this by splitting the slice at index <code>j</code>
+    and returning two non-overlapping <code>&amp;mut [T]</code>. The compiler can then
+    verify statically that <code>left[i]</code> and <code>right[0]</code> are distinct
+    memory locations.
+  </p>
+</div>
+
+<div className="callout callout-info">
+  <span className="callout-title">Elastic collision formula</span>
+  <p>
+    For a perfectly elastic collision (restitution = 1), the impulse magnitude along the
+    collision normal is <code>j = 2 × v_rel / (1/m₁ + 1/m₂)</code>. Each object's
+    velocity changes by <code>j / mass</code> — heavier objects change less. The
+    <code>vel_along &lt;= 0</code> guard skips pairs that are already separating so we
+    never apply a repulsive impulse where none is needed.
+  </p>
+</div>
+
+Call it from `src/game.rs` after updating asteroid positions. First update the import:
+
+```rust
+// Replace:
+use crate::asteroid::Asteroid;
+// With:
+use crate::asteroid::{self, Asteroid};
+```
+
+Then add the call in `update`, after the asteroid update loop and before `update_bullets`:
+
+```rust
+for asteroid in &mut self.asteroids {
+    asteroid.update(dt);
+}
+asteroid::resolve_collisions(&mut self.asteroids); // add this
+self.update_bullets();
+```
+
+<div className="callout callout-tip">
+  <span className="callout-title">Run it</span>
+  <p>
+    <code>cargo run</code> — asteroids now bounce off each other. Dense clusters
+    scatter on impact. The FPS meter shows the cost of the O(n²) pair loop — watch it
+    as the asteroid count grows.
+  </p>
+</div>
+
+---
+
+## Milestone 6 — Unified elastic physics
+
+<span className="step-badge">Milestone 6 of 8</span>
+
+The ship currently gets pushed out of asteroids positionally but doesn't bounce. This milestone replaces the positional-correction-only approach with the same elastic impulse model used by asteroid-asteroid collisions.
+
+### Step 12 — Ship mass and elastic response
+
+**`src/player.rs`** — add a mass constant:
+
+```rust
+pub const PLAYER_MASS: f32 = 500.0;
+```
+
+Update the import in `src/game.rs`:
+
+```rust
+use crate::player::{Player, PLAYER_RADIUS, PLAYER_MASS};
+```
+
+Replace the body of `update_collisions` in `src/game.rs` with the elastic version. The key change: track `player_vel` as a local (same copy pattern as `player_pos`), and apply the elastic impulse formula rather than pure positional correction:
+
+```rust
+fn update_collisions(&mut self) {
+    let player_aabb = self.player.aabb();
+    let mut player_pos = self.player.pos;
+    let mut player_vel = self.player.vel;  // track velocity too now
+    let player_invincible = self.player.invincibility > 0.0;
+    let mut took_damage = false;
+
+    for asteroid in &mut self.asteroids {
+        if !player_aabb.overlaps(&asteroid.aabb()) { continue; }
+        if !collision::circle_hits_polygon(
+            player_pos, PLAYER_RADIUS, asteroid.pos, &asteroid.vertices,
+        ) { continue; }
+
+        // Normal points from player toward asteroid (A→B convention,
+        // matching the asteroid-asteroid code in asteroid.rs)
+        let normal = (asteroid.pos - player_pos).normalize_or_zero();
+        let vel_along = (player_vel - asteroid.vel).dot(normal);
+
+        if vel_along > 0.0 {
+            // Same elastic formula as asteroid::resolve_collisions
+            let ma = asteroid.mass();
+            let j = 2.0 * vel_along / (1.0 / PLAYER_MASS + 1.0 / ma);
+            player_vel   -= normal * (j / PLAYER_MASS);
+            asteroid.vel += normal * (j / ma);
+
+            let overlap = PLAYER_RADIUS + asteroid.radius
+                - player_pos.distance(asteroid.pos);
+            if overlap > 0.0 {
+                let correction = normal * overlap * 0.5;
+                player_pos   -= correction;
+                asteroid.pos += correction;
+            }
+        }
+
+        if !player_invincible {
+            took_damage = true;
+        }
+    }
+
+    self.player.pos = player_pos;
+    self.player.vel = player_vel;  // write velocity back
+
+    if took_damage {
+        self.player.hp -= 20.0;
+        self.player.invincibility = 1.5;
+        if self.player.hp <= 0.0 {
+            self.state = GameState::GameOver;
+        }
+    }
+}
+```
+
+<div className="callout callout-info">
+  <span className="callout-title">Consistent conventions</span>
+  <p>
+    The normal here points <em>from player toward asteroid</em> — the same A→B convention
+    used in <code>asteroid::resolve_collisions</code>. Positive <code>vel_along</code>
+    means the player is moving toward the asteroid. The impulse pushes the player backward
+    (<code>-= normal * j/mass</code>) and the asteroid forward (<code>+= normal * j/mass</code>).
+    Keeping one convention everywhere makes the physics easier to reason about and extend.
+  </p>
+</div>
+
+<div className="callout callout-tip">
+  <span className="callout-title">Run it</span>
+  <p>
+    <code>cargo run</code> — flying into an asteroid now sends both the ship and the
+    asteroid flying in physically plausible directions. Small asteroids scatter; large
+    ones barely flinch and knock the ship aside instead.
+  </p>
+</div>
+
+---
+
+## Milestone 7 — Broad-phase asteroid physics
+
+<span className="step-badge">Milestone 7 of 8</span>
+
+The ship-asteroid collision code already uses an AABB broad phase. But `resolve_collisions` checks every pair with `distance()` directly. Add the same AABB guard.
+
+### Step 13 — Add AABB guard to `resolve_collisions`
+
+Add a single AABB check at the top of the inner loop, before the distance calculation:
+
+```rust
+pub fn resolve_collisions(asteroids: &mut [Asteroid]) {
+    let n = asteroids.len();
+    for i in 0..n {
+        for j in (i + 1)..n {
+            let (left, right) = asteroids.split_at_mut(j);
+            let a = &mut left[i];
+            let b = &mut right[0];
+
+            // Broad phase — skip pairs whose bounding boxes don't overlap
+            if !a.aabb().overlaps(&b.aabb()) { continue; }
+
+            let dist = a.pos.distance(b.pos);
+            // ... rest unchanged
+        }
+    }
+}
+```
+
+The AABB test involves four comparisons against precomputed min/max values — far cheaper than the `distance()` call which requires a subtraction, two multiplications, an addition, and a square root.
+
+<div className="callout callout-tip">
+  <span className="callout-title">Run it</span>
+  <p>
+    <code>cargo run</code> — behaviour is identical, but the FPS meter should hold
+    steadier as asteroids pile up.
+  </p>
+</div>
+
+---
+
+## Milestone 8 — Asteroid splitting
+
+<span className="step-badge">Milestone 8 of 8</span>
+
+Large asteroids currently vanish when shot. This milestone makes them split into two smaller fragments. Second-generation fragments are destroyed on hit — no infinite splitting.
+
+### Step 14 — Add `generation` field and fragment constructor (`src/asteroid.rs`)
+
+Add a `generation` field to the `Asteroid` struct:
+
+```rust
+pub struct Asteroid {
+    pub pos: Vec2,
+    pub vel: Vec2,
+    pub radius: f32,
+    pub vertices: Vec<Vec2>,
+    pub generation: u8,
+}
+```
+
+Update `spawn()` to initialise the new field:
+
+```rust
+Asteroid { pos, vel: dir * speed, radius, vertices, generation: 0 }
+```
+
+Add a `spawn_fragment` constructor below `spawn()`:
+
+```rust
+pub fn spawn_fragment(parent_pos: Vec2, parent_vel: Vec2, parent_radius: f32, kick_dir: Vec2) -> Self {
+    let radius = parent_radius * rand::gen_range(0.45f32, 0.55);
+    let n = rand::gen_range(5u32, 9) as usize;
+    let vertices = (0..n)
+        .map(|i| {
+            let angle = (i as f32 / n as f32) * std::f32::consts::TAU;
+            let r = radius * rand::gen_range(0.7f32, 1.3);
+            Vec2::from_angle(angle) * r
+        })
+        .collect();
+    let vel = parent_vel + kick_dir * rand::gen_range(40.0f32, 100.0);
+    Asteroid {
+        pos: parent_pos + kick_dir * radius,
+        vel,
+        radius,
+        vertices,
+        generation: 1,
+    }
+}
+```
+
+### Step 15 — Split on hit (`src/game.rs`)
+
+Replace `update_bullets` to split generation-0 asteroids instead of destroying them:
+
+```rust
+fn update_bullets(&mut self) {
+    for bullet in &mut self.bullets {
+        bullet.update(get_frame_time());
+    }
+    self.bullets.retain(|b| !b.is_off_screen());
+
+    let mut asteroids_hit: Vec<usize> = Vec::new();
+    self.bullets.retain(|bullet| {
+        for (i, asteroid) in self.asteroids.iter().enumerate() {
+            if collision::point_in_polygon(bullet.pos, asteroid.pos, &asteroid.vertices) {
+                if !asteroids_hit.contains(&i) {
+                    asteroids_hit.push(i);
+                }
+                return false;
+            }
+        }
+        true
+    });
+
+    // Collect fragments from generation-0 asteroids before removing
+    let mut fragments: Vec<Asteroid> = Vec::new();
+    for &i in &asteroids_hit {
+        let asteroid = &self.asteroids[i];
+        if asteroid.generation == 0 {
+            let spread = Vec2::from_angle(rand::gen_range(0.0f32, std::f32::consts::TAU));
+            fragments.push(Asteroid::spawn_fragment(
+                asteroid.pos, asteroid.vel, asteroid.radius, spread,
+            ));
+            fragments.push(Asteroid::spawn_fragment(
+                asteroid.pos, asteroid.vel, asteroid.radius, -spread,
+            ));
+        }
+    }
+
+    asteroids_hit.sort_unstable();
+    for i in asteroids_hit.into_iter().rev() {
+        self.asteroids.swap_remove(i);
+    }
+    self.asteroids.extend(fragments);
+}
+```
+
+<div className="callout callout-info">
+  <span className="callout-title">Why collect fragments separately?</span>
+  <p>
+    We can't push new asteroids into <code>self.asteroids</code> while iterating
+    <code>asteroids_hit</code> indices — the push might reallocate the <code>Vec</code>,
+    invalidating the indices. Collecting fragments into a separate <code>Vec</code> and
+    calling <code>extend</code> after all removals keeps the logic clean and the indices
+    valid.
+  </p>
+</div>
+
+<div className="callout callout-tip">
+  <span className="callout-title">Run it</span>
+  <p>
+    <code>cargo run</code> — shoot a large asteroid and it breaks into two smaller
+    pieces that scatter in opposite directions. Shoot a fragment and it's destroyed.
+  </p>
+</div>
+
+---
+
+## Complete listing
+
+The project now has six source files:
+
+```
+src/
+├── main.rs
+├── collision.rs
+├── player.rs
+├── asteroid.rs
+├── bullet.rs
+└── game.rs
+```
+
+**`src/main.rs`**
+
+```rust
+use macroquad::prelude::*;
+
+mod collision;
+mod player;
+mod asteroid;
+mod bullet;
+mod game;
+
+use game::Game;
+
+#[macroquad::main("Asteroid Dodger")]
+async fn main() {
+    let mut game = Game::new();
+    loop {
+        game.update(get_frame_time());
+        game.draw();
+        next_frame().await;
+    }
+}
+```
+
+**`src/collision.rs`**
+
+```rust
+use macroquad::prelude::Vec2;
+
+pub struct Aabb {
+    pub min: Vec2,
+    pub max: Vec2,
+}
+
+impl Aabb {
+    pub fn from_center_radius(center: Vec2, radius: f32) -> Self {
+        Self {
+            min: center - Vec2::splat(radius),
+            max: center + Vec2::splat(radius),
+        }
+    }
+
+    pub fn overlaps(&self, other: &Aabb) -> bool {
+        self.min.x <= other.max.x && self.max.x >= other.min.x
+            && self.min.y <= other.max.y && self.max.y >= other.min.y
+    }
+}
+
+pub fn closest_point_on_segment(a: Vec2, b: Vec2, p: Vec2) -> Vec2 {
+    let ab = b - a;
+    let t = ((p - a).dot(ab) / ab.length_squared()).clamp(0.0, 1.0);
+    a + ab * t
+}
+
+pub fn point_in_polygon(point: Vec2, poly_pos: Vec2, vertices: &[Vec2]) -> bool {
+    let n = vertices.len();
+    let mut inside = false;
+    let mut j = n - 1;
+    for i in 0..n {
+        let vi = poly_pos + vertices[i];
+        let vj = poly_pos + vertices[j];
+        if (vi.y > point.y) != (vj.y > point.y)
+            && point.x < (vj.x - vi.x) * (point.y - vi.y) / (vj.y - vi.y) + vi.x
+        {
+            inside = !inside;
+        }
+        j = i;
+    }
+    inside
+}
+
+pub fn circle_hits_polygon(
+    center: Vec2,
+    radius: f32,
+    poly_pos: Vec2,
+    vertices: &[Vec2],
+) -> bool {
+    let n = vertices.len();
+    for i in 0..n {
+        let a = poly_pos + vertices[i];
+        let b = poly_pos + vertices[(i + 1) % n];
+        if center.distance(closest_point_on_segment(a, b, center)) < radius {
+            return true;
+        }
+    }
+    point_in_polygon(center, poly_pos, vertices)
+}
+```
+
+**`src/player.rs`**
+
+```rust
+use macroquad::prelude::*;
+use crate::collision::Aabb;
+use crate::bullet::Bullet;
+
+pub const PLAYER_RADIUS: f32 = 16.0;
+pub const PLAYER_MASS: f32 = 500.0;
+
+const THRUST: f32 = 300.0;
+const DRAG: f32 = 1.8;
+const ROTATE_SPEED: f32 = 3.0;
+const MAX_SPEED: f32 = 420.0;
+
+pub struct Player {
+    pub pos: Vec2,
+    pub vel: Vec2,
+    pub hp: f32,
+    pub invincibility: f32,
+    angle: f32,
+}
+
+impl Player {
+    pub fn new() -> Self {
+        Self {
+            pos: Vec2::new(screen_width() / 2.0, screen_height() / 2.0),
+            vel: Vec2::ZERO,
+            hp: 100.0,
+            invincibility: 0.0,
+            angle: -std::f32::consts::FRAC_PI_2,
+        }
+    }
+
+    pub fn update(&mut self, dt: f32) {
+        if is_key_down(KeyCode::A) { self.angle -= ROTATE_SPEED * dt; }
+        if is_key_down(KeyCode::D) { self.angle += ROTATE_SPEED * dt; }
+
+        if is_key_down(KeyCode::W) {
+            self.vel += Vec2::from_angle(self.angle) * THRUST * dt;
+        }
+
+        self.vel *= 1.0 - DRAG * dt;
+        if self.vel.length() > MAX_SPEED {
+            self.vel = self.vel.normalize() * MAX_SPEED;
+        }
+
+        self.pos += self.vel * dt;
+
+        let (sw, sh) = (screen_width(), screen_height());
+        if self.pos.x < 0.0 { self.pos.x += sw; }
+        if self.pos.x > sw  { self.pos.x -= sw; }
+        if self.pos.y < 0.0 { self.pos.y += sh; }
+        if self.pos.y > sh  { self.pos.y -= sh; }
+
+        if self.invincibility > 0.0 {
+            self.invincibility -= dt;
+        }
+    }
+
+    pub fn aabb(&self) -> Aabb {
+        Aabb::from_center_radius(self.pos, PLAYER_RADIUS)
+    }
+
+    pub fn spawn_bullet(&self) -> Bullet {
+        let forward = Vec2::from_angle(self.angle);
+        Bullet::new(self.pos + forward * 22.0, self.angle)
+    }
+
+    pub fn draw(&self) {
+        if self.invincibility > 0.0 && (self.invincibility * 8.0) as u32 % 2 == 0 {
+            return;
+        }
+        let forward = Vec2::from_angle(self.angle);
+        let side = Vec2::new(-forward.y, forward.x);
+        draw_triangle(
+            self.pos + forward * 20.0,
+            self.pos - forward * 10.0 + side * 12.0,
+            self.pos - forward * 10.0 - side * 12.0,
+            WHITE,
+        );
+    }
+}
+```
+
+**`src/asteroid.rs`**
+
+```rust
+use macroquad::prelude::*;
+use crate::collision::Aabb;
+
+pub struct Asteroid {
+    pub pos: Vec2,
+    pub vel: Vec2,
+    pub radius: f32,
+    pub vertices: Vec<Vec2>,
+    pub generation: u8,
+}
+
+impl Asteroid {
+    pub fn spawn() -> Self {
+        let (sw, sh) = (screen_width(), screen_height());
+        let pos = match rand::gen_range(0u32, 4) {
+            0 => Vec2::new(rand::gen_range(0.0, sw), -60.0),
+            1 => Vec2::new(sw + 60.0, rand::gen_range(0.0, sh)),
+            2 => Vec2::new(rand::gen_range(0.0, sw), sh + 60.0),
+            _ => Vec2::new(-60.0, rand::gen_range(0.0, sh)),
+        };
+        let target = Vec2::new(
+            sw / 2.0 + rand::gen_range(-150.0f32, 150.0),
+            sh / 2.0 + rand::gen_range(-150.0f32, 150.0),
+        );
+        let dir    = (target - pos).normalize_or_zero();
+        let speed  = rand::gen_range(60.0f32, 160.0);
+        let radius = rand::gen_range(20.0f32, 50.0);
+        let n      = rand::gen_range(7u32, 13) as usize;
+        let vertices = (0..n)
+            .map(|i| {
+                let angle = (i as f32 / n as f32) * std::f32::consts::TAU;
+                let r = radius * rand::gen_range(0.7f32, 1.3);
+                Vec2::from_angle(angle) * r
+            })
+            .collect();
+        Asteroid { pos, vel: dir * speed, radius, vertices, generation: 0 }
+    }
+
+    pub fn spawn_fragment(parent_pos: Vec2, parent_vel: Vec2, parent_radius: f32, kick_dir: Vec2) -> Self {
+        let radius = parent_radius * rand::gen_range(0.45f32, 0.55);
+        let n = rand::gen_range(5u32, 9) as usize;
+        let vertices = (0..n)
+            .map(|i| {
+                let angle = (i as f32 / n as f32) * std::f32::consts::TAU;
+                let r = radius * rand::gen_range(0.7f32, 1.3);
+                Vec2::from_angle(angle) * r
+            })
+            .collect();
+        let vel = parent_vel + kick_dir * rand::gen_range(40.0f32, 100.0);
+        Asteroid {
+            pos: parent_pos + kick_dir * radius,
+            vel,
+            radius,
+            vertices,
+            generation: 1,
+        }
+    }
+
+    pub fn update(&mut self, dt: f32) {
+        self.pos += self.vel * dt;
+    }
+
+    pub fn is_off_screen(&self) -> bool {
+        let margin = 200.0;
+        let (sw, sh) = (screen_width(), screen_height());
+        self.pos.x < -margin || self.pos.x > sw + margin
+            || self.pos.y < -margin || self.pos.y > sh + margin
+    }
+
+    pub fn aabb(&self) -> Aabb {
+        let mut min = Vec2::splat(f32::MAX);
+        let mut max = Vec2::splat(f32::MIN);
+        for v in &self.vertices {
+            let world = self.pos + *v;
+            min = min.min(world);
+            max = max.max(world);
+        }
+        Aabb { min, max }
+    }
+
+    pub fn mass(&self) -> f32 {
+        self.radius * self.radius
+    }
+
+    pub fn draw(&self) {
+        let n = self.vertices.len();
+        for i in 0..n {
+            let a = self.pos + self.vertices[i];
+            let b = self.pos + self.vertices[(i + 1) % n];
+            draw_triangle(self.pos, a, b, GRAY);
+            draw_line(a.x, a.y, b.x, b.y, 1.5, LIGHTGRAY);
+        }
+    }
+}
+
+pub fn resolve_collisions(asteroids: &mut [Asteroid]) {
+    let n = asteroids.len();
+    for i in 0..n {
+        for j in (i + 1)..n {
+            let (left, right) = asteroids.split_at_mut(j);
+            let a = &mut left[i];
+            let b = &mut right[0];
+
+            if !a.aabb().overlaps(&b.aabb()) { continue; }
+
+            let dist = a.pos.distance(b.pos);
+            let min_dist = a.radius + b.radius;
+            if dist >= min_dist || dist < 0.001 { continue; }
+
+            let normal = (b.pos - a.pos) / dist;
+            let vel_along = (a.vel - b.vel).dot(normal);
+            if vel_along <= 0.0 { continue; }
+
+            let ma = a.mass();
+            let mb = b.mass();
+            let j_imp = 2.0 * vel_along / (1.0 / ma + 1.0 / mb);
+            a.vel -= normal * (j_imp / ma);
+            b.vel += normal * (j_imp / mb);
+
+            let overlap = min_dist - dist;
+            let correction = normal * overlap * 0.5;
+            a.pos -= correction;
+            b.pos += correction;
+        }
+    }
+}
+```
+
+**`src/bullet.rs`**
+
+```rust
+use macroquad::prelude::*;
+
+const SPEED: f32 = 600.0;
+
+pub struct Bullet {
+    pub pos: Vec2,
+    vel: Vec2,
+}
+
+impl Bullet {
+    pub fn new(pos: Vec2, angle: f32) -> Self {
+        Self { pos, vel: Vec2::from_angle(angle) * SPEED }
+    }
+
+    pub fn update(&mut self, dt: f32) {
+        self.pos += self.vel * dt;
+    }
+
+    pub fn is_off_screen(&self) -> bool {
+        let (sw, sh) = (screen_width(), screen_height());
+        self.pos.x < 0.0 || self.pos.x > sw || self.pos.y < 0.0 || self.pos.y > sh
+    }
+
+    pub fn draw(&self) {
+        draw_circle(self.pos.x, self.pos.y, 3.0, YELLOW);
+    }
+}
+```
+
+**`src/game.rs`**
+
+```rust
+use macroquad::prelude::*;
+use crate::player::{Player, PLAYER_RADIUS, PLAYER_MASS};
+use crate::asteroid::{self, Asteroid};
+use crate::bullet::Bullet;
+use crate::collision;
+
+#[derive(PartialEq)]
+enum GameState {
+    Playing,
+    GameOver,
+}
+
+pub struct Game {
+    player: Player,
+    asteroids: Vec<Asteroid>,
+    bullets: Vec<Bullet>,
+    score: f32,
+    spawn_timer: f32,
+    spawn_interval: f32,
+    shoot_cooldown: f32,
+    state: GameState,
+}
+
+impl Game {
+    pub fn new() -> Self {
+        Self {
+            player: Player::new(),
+            asteroids: Vec::new(),
+            bullets: Vec::new(),
+            score: 0.0,
+            spawn_timer: 0.0,
+            spawn_interval: 3.0,
+            shoot_cooldown: 0.0,
+            state: GameState::Playing,
+        }
+    }
+
+    pub fn update(&mut self, dt: f32) {
+        if self.state == GameState::GameOver {
+            if is_key_pressed(KeyCode::R) { *self = Game::new(); }
+            return;
+        }
+
+        self.player.update(dt);
+        self.score += dt;
+
+        self.shoot_cooldown -= dt;
+        if is_key_down(KeyCode::Space) && self.shoot_cooldown <= 0.0 {
+            self.bullets.push(self.player.spawn_bullet());
+            self.shoot_cooldown = 0.15;
+        }
+
+        self.spawn_timer += dt;
+        if self.spawn_timer >= self.spawn_interval {
+            self.spawn_timer = 0.0;
+            self.asteroids.push(Asteroid::spawn());
+            self.spawn_interval = (self.spawn_interval - 0.15).max(0.6);
+        }
+
+        for asteroid in &mut self.asteroids {
+            asteroid.update(dt);
+        }
+        asteroid::resolve_collisions(&mut self.asteroids);
+
+        self.update_bullets();
+
+        self.asteroids.retain(|a| !a.is_off_screen());
+        self.update_collisions();
+    }
+
+    fn update_bullets(&mut self) {
+        for bullet in &mut self.bullets {
+            bullet.update(get_frame_time());
+        }
+        self.bullets.retain(|b| !b.is_off_screen());
+
+        let mut asteroids_hit: Vec<usize> = Vec::new();
+        self.bullets.retain(|bullet| {
+            for (i, asteroid) in self.asteroids.iter().enumerate() {
+                if collision::point_in_polygon(bullet.pos, asteroid.pos, &asteroid.vertices) {
+                    if !asteroids_hit.contains(&i) {
+                        asteroids_hit.push(i);
+                    }
+                    return false;
+                }
+            }
+            true
+        });
+
+        let mut fragments: Vec<Asteroid> = Vec::new();
+        for &i in &asteroids_hit {
+            let asteroid = &self.asteroids[i];
+            if asteroid.generation == 0 {
+                let spread = Vec2::from_angle(rand::gen_range(0.0f32, std::f32::consts::TAU));
+                fragments.push(Asteroid::spawn_fragment(
+                    asteroid.pos, asteroid.vel, asteroid.radius, spread,
+                ));
+                fragments.push(Asteroid::spawn_fragment(
+                    asteroid.pos, asteroid.vel, asteroid.radius, -spread,
+                ));
+            }
+        }
+
+        asteroids_hit.sort_unstable();
+        for i in asteroids_hit.into_iter().rev() {
+            self.asteroids.swap_remove(i);
+        }
+        self.asteroids.extend(fragments);
+    }
+
+    fn update_collisions(&mut self) {
+        let player_aabb = self.player.aabb();
+        let mut player_pos = self.player.pos;
+        let mut player_vel = self.player.vel;
+        let player_invincible = self.player.invincibility > 0.0;
+        let mut took_damage = false;
+
+        for asteroid in &mut self.asteroids {
+            if !player_aabb.overlaps(&asteroid.aabb()) { continue; }
+            if !collision::circle_hits_polygon(
+                player_pos, PLAYER_RADIUS, asteroid.pos, &asteroid.vertices,
+            ) { continue; }
+
+            let normal = (asteroid.pos - player_pos).normalize_or_zero();
+            let vel_along = (player_vel - asteroid.vel).dot(normal);
+
+            if vel_along > 0.0 {
+                let ma = asteroid.mass();
+                let j = 2.0 * vel_along / (1.0 / PLAYER_MASS + 1.0 / ma);
+                player_vel   -= normal * (j / PLAYER_MASS);
+                asteroid.vel += normal * (j / ma);
+
+                let overlap = PLAYER_RADIUS + asteroid.radius
+                    - player_pos.distance(asteroid.pos);
+                if overlap > 0.0 {
+                    let correction = normal * overlap * 0.5;
+                    player_pos   -= correction;
+                    asteroid.pos += correction;
+                }
+            }
+
+            if !player_invincible {
+                took_damage = true;
+            }
+        }
+
+        self.player.pos = player_pos;
+        self.player.vel = player_vel;
+
+        if took_damage {
+            self.player.hp -= 20.0;
+            self.player.invincibility = 1.5;
+            if self.player.hp <= 0.0 {
+                self.state = GameState::GameOver;
+            }
+        }
+    }
+
+    pub fn draw(&self) {
+        clear_background(BLACK);
+
+        draw_text(
+            &format!("FPS: {}", get_fps()),
+            screen_width() - 90.0, 24.0, 20.0, DARKGREEN,
+        );
+
+        for asteroid in &self.asteroids {
+            asteroid.draw();
+        }
+        for bullet in &self.bullets {
+            bullet.draw();
+        }
+        self.player.draw();
+
+        draw_text(&format!("Score: {}", self.score as u32), 20.0, 24.0, 24.0, WHITE);
+
+        draw_rectangle(20.0, 36.0, 200.0, 16.0, DARKGRAY);
+        let fill_width = 200.0 * (self.player.hp / 100.0).clamp(0.0, 1.0);
+        let bar_color = if self.player.hp > 60.0 { GREEN }
+                        else if self.player.hp > 30.0 { YELLOW }
+                        else { RED };
+        draw_rectangle(20.0, 36.0, fill_width, 16.0, bar_color);
+        draw_rectangle_lines(20.0, 36.0, 200.0, 16.0, 1.5, WHITE);
+
+        if self.state == GameState::GameOver {
+            let msg = format!("Game Over — Score: {}", self.score as u32);
+            draw_text(&msg, screen_width() / 2.0 - 180.0, screen_height() / 2.0, 40.0, WHITE);
+            draw_text("Press R to restart", screen_width() / 2.0 - 110.0, screen_height() / 2.0 + 50.0, 24.0, GRAY);
+        }
+    }
+}
+```
+
+## Next steps
+
+- **[Add Sound and Particle Effects](/tutorials/rust-macroquad-sound-particles)** — procedural audio generation, particle system for explosions and damage
+- **[Add a Menu, Settings, and Spatial Grid](/tutorials/rust-macroquad-menu-settings)** — title screen, keybinding editor, high score, spatial partitioning

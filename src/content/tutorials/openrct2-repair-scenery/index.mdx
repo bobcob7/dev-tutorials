@@ -16,21 +16,85 @@ autonomously find and fix broken path additions within their patrol area.
 
 ## Steps overview
 
-1. Add the order bitmask flag in `Staff.h`
-2. Register a sprite ID and create the icon in `SpriteIds.h`
-3. Write the pathfinding detector in `Staff.cpp`
-4. Implement the repair action state
-5. Track and persist the statistic
-6. Update the UI window (orders + stats tabs)
-7. Add localisation strings in `en-GB.txt`
-8. Expose the stat in the plugin API
-9. Write a changelog entry
+<div className="steps-grid">
+  <div className="step-card">
+    <span className="step-num">Step 1</span>
+    <span className="step-name">Order Flag</span>
+    <span className="step-desc">Add the bitmask constant in Staff.h</span>
+  </div>
+  <div className="step-card">
+    <span className="step-num">Step 2</span>
+    <span className="step-name">Sprite & Icon</span>
+    <span className="step-desc">Register a sprite ID and create the icon</span>
+  </div>
+  <div className="step-card">
+    <span className="step-num">Step 3</span>
+    <span className="step-name">Pathfinding</span>
+    <span className="step-desc">Write the pathfinding detector in Staff.cpp</span>
+  </div>
+  <div className="step-card">
+    <span className="step-num">Step 4</span>
+    <span className="step-name">Action State</span>
+    <span className="step-desc">Implement the repair loop and peep state</span>
+  </div>
+  <div className="step-card">
+    <span className="step-num">Step 5</span>
+    <span className="step-name">Statistics</span>
+    <span className="step-desc">Track and persist the repair counter</span>
+  </div>
+  <div className="step-card">
+    <span className="step-num">Step 6</span>
+    <span className="step-name">UI Window</span>
+    <span className="step-desc">Update the orders and stats tabs</span>
+  </div>
+  <div className="step-card">
+    <span className="step-num">Step 7</span>
+    <span className="step-name">Localisation</span>
+    <span className="step-desc">Add display strings in en-GB.txt</span>
+  </div>
+  <div className="step-card">
+    <span className="step-num">Step 8</span>
+    <span className="step-name">Plugin API</span>
+    <span className="step-desc">Expose the stat to the scripting layer</span>
+  </div>
+  <div className="step-card">
+    <span className="step-num">Step 9</span>
+    <span className="step-name">Changelog</span>
+    <span className="step-desc">Document the feature for release notes</span>
+  </div>
+</div>
 
 ## Prerequisites
 
-- Basic C++ — structs, enums, pointers, bitwise operators
-- Git and CMake installed
-- The repo cloned and building locally
+**What you need to know:**
+
+<div className="skill-row">
+  <span className="skill-pill skill-need">Structs & enums</span>
+  <span className="skill-pill skill-need">Pointers</span>
+  <span className="skill-pill skill-need">Bitwise operators</span>
+  <span className="skill-pill skill-need">Basic C++ syntax</span>
+  <span className="skill-pill skill-noneed">Templates</span>
+  <span className="skill-pill skill-noneed">Smart pointers</span>
+  <span className="skill-pill skill-noneed">Move semantics</span>
+</div>
+
+**What you need installed:**
+
+<div className="tools-grid">
+  <div className="tool-card">
+    <span className="tool-name">Git</span>
+    <span className="tool-desc">Clone the repo and manage branches</span>
+  </div>
+  <div className="tool-card">
+    <span className="tool-name">CMake</span>
+    <span className="tool-desc">Build system used by the project</span>
+  </div>
+  <div className="tool-card">
+    <span className="tool-name">C++ compiler</span>
+    <span className="tool-rec">GCC, Clang, or MSVC</span>
+    <span className="tool-desc">The repo must build locally before you start</span>
+  </div>
+</div>
 
 <div className="callout callout-tip">
   <span className="callout-title">Reference pattern</span>
@@ -43,8 +107,16 @@ autonomously find and fix broken path additions within their patrol area.
 
 ## Step 1 — Add the order flag
 
+<span className="step-badge">Step 1 of 9</span>
+
 Open `src/openrct2/entity/Staff.h` and add a new constant to the `STAFF_ORDERS` enum.
 Each order is a power-of-two bit so multiple orders can be combined in a single byte.
+
+<div className="code-block">
+  <div className="code-header">
+    <span className="code-filename">src/openrct2/entity/Staff.h</span>
+    <a className="code-link" href="https://github.com/OpenRCT2/OpenRCT2/blob/develop/src/openrct2/entity/Staff.h">View on GitHub →</a>
+  </div>
 
 ```cpp
 enum STAFF_ORDERS
@@ -57,8 +129,11 @@ enum STAFF_ORDERS
     // ...
 };
 ```
+</div>
 
 ## Step 2 — Register a sprite ID
+
+<span className="step-badge">Step 2 of 9</span>
 
 Open `src/openrct2/SpriteIds.h`. Find the existing staff order icons and append a new ID
 after the last registered sprite in the G2 block.
@@ -73,6 +148,12 @@ after the last registered sprite in the G2 block.
   </p>
 </div>
 
+<div className="code-block">
+  <div className="code-header">
+    <span className="code-filename">src/openrct2/SpriteIds.h</span>
+    <a className="code-link" href="https://github.com/OpenRCT2/OpenRCT2/blob/develop/src/openrct2/sprites/SpriteIds.h">View on GitHub →</a>
+  </div>
+
 ```cpp
 SPR_STAFF_ORDERS_SWEEPING      = 5111,
 SPR_STAFF_ORDERS_WATER_FLOWERS = 5112,
@@ -81,11 +162,14 @@ SPR_STAFF_ORDERS_MOWING        = 5114,
 // ...
 SPR_STAFF_ORDERS_REPAIR_SCENERY = 5115,  // new — use last value + 1
 ```
+</div>
 
 Create a 24×24 PNG in `resources/g2/` and register it in `resources/g2/sprites.json` by
 appending an entry that matches the filename — follow the existing entries as your pattern.
 
 ## Step 3 — Pathfinding
+
+<span className="step-badge">Step 3 of 9</span>
 
 Add `UpdatePatrollingFindBrokenScenery()` to `Staff.cpp`. It follows the same pattern
 as `UpdatePatrollingFindBin()` — check the order flag, walk the tile element stack,
@@ -98,6 +182,12 @@ walks through the stack, and `IsLastForTile()` signals the end.
 
 `GetNextIsSurface()` returns `true` when the handyman's queued next position is an open
 ground tile with no path — there is nothing to repair there, so we return early.
+
+<div className="code-block">
+  <div className="code-header">
+    <span className="code-filename">src/openrct2/entity/Staff.cpp</span>
+    <a className="code-link" href="https://github.com/OpenRCT2/OpenRCT2/blob/develop/src/openrct2/entity/Staff.cpp">View on GitHub →</a>
+  </div>
 
 ```cpp
 bool Staff::UpdatePatrollingFindBrokenScenery()
@@ -131,6 +221,7 @@ bool Staff::UpdatePatrollingFindBrokenScenery()
     return true;
 }
 ```
+</div>
 
 `IsBroken()` reads a boolean flag on the path addition element that guests set when they
 vandalize an object — there is no damage counter, just a flag.
@@ -145,6 +236,8 @@ subsequent tick until the repair completes and the state reverts to `Patrolling`
 Then call it from the dispatch block at the bottom of `UpdatePatrolling()`.
 
 ## Step 4 — Add the peep state and implement the repair loop
+
+<span className="step-badge">Step 4 of 9</span>
 
 Open `src/openrct2/peep/Peep.h` and find the `PeepState` enum. Search for `EmptyingBin`
 and add `RepairingScenery` immediately after it:
@@ -172,6 +265,8 @@ Finally, add a `case PeepState::RepairingScenery:` branch to the main update swi
 
 ## Step 5 — Track and persist the statistic
 
+<span className="step-badge">Step 5 of 9</span>
+
 In `Staff.h`, add the repair counter to the `Staff` struct next to `StaffBinsEmptied`:
 
 ```cpp
@@ -192,6 +287,8 @@ The order of `ds()` calls must match between save and load, so position matters.
 
 ## Step 6 — Update the UI window
 
+<span className="step-badge">Step 6 of 9</span>
+
 Search for `WIDX_STAFF_ORDERS_EMPTY_BINS` to find the handyman window file under
 `src/openrct2/windows/`.
 
@@ -206,6 +303,8 @@ each counter as a row. Add an equivalent row for `StaffSceneryRepaired` using
 
 ## Step 7 — Add localisation strings
 
+<span className="step-badge">Step 7 of 9</span>
+
 Open `data/language/en-GB.txt`. Search for `STR_STAFF_ORDERS_EMPTY_BINS` to find the
 staff order strings block and add:
 
@@ -216,11 +315,15 @@ STR_STAFF_SCENERY_REPAIRED          :Scenery repaired: {INT32}
 
 ## Step 8 — Expose the stat in the plugin API
 
+<span className="step-badge">Step 8 of 9</span>
+
 Search for `binsEmptied` in `src/openrct2/scripting/`. The staff entity binding
 exposes each stat as a named read-only property. Add a matching `sceneryRepaired`
 property following the same pattern.
 
 ## Step 9 — Add a changelog entry
+
+<span className="step-badge">Step 9 of 9</span>
 
 Add a one-line entry to `distribution/changelog.txt` under the **Feature** heading:
 
