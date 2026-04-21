@@ -32,15 +32,25 @@ const { seriesSlug, tutorials } = Astro.props;
     const tutorialSlugs: string[] = JSON.parse(wrap.dataset.tutorials!);
 
     let completedCount = 0;
-    let firstIncomplete: string | null = null;
+    let hasAnyProgress = false;
 
     tutorialSlugs.forEach((slug) => {
       const isComplete = localStorage.getItem(`tutorial-complete:${slug}`);
       if (isComplete) {
         completedCount++;
-      } else if (!firstIncomplete) {
-        firstIncomplete = slug;
+        hasAnyProgress = true;
       }
+
+      // Check if any steps have been started in this tutorial
+      try {
+        const raw = localStorage.getItem(`tutorial-progress:${slug}`);
+        if (raw) {
+          const steps = JSON.parse(raw);
+          if (Object.values(steps).some((v) => v === true)) {
+            hasAnyProgress = true;
+          }
+        }
+      } catch {}
 
       // Update the series list item if it exists
       const item = document.querySelector(`.series-item[href="/tutorials/${slug}"]`) as HTMLElement;
@@ -55,13 +65,15 @@ const { seriesSlug, tutorials } = Astro.props;
     const fill = document.getElementById("series-progress-fill");
     const text = document.getElementById("series-progress-text");
     if (fill) fill.style.width = `${pct}%`;
-    if (text) text.textContent = `${completedCount} / ${total} tutorials complete`;
+    if (text) text.textContent = hasAnyProgress
+      ? `${completedCount} / ${total} tutorials complete`
+      : `${total} tutorials`;
 
-    // Show continue button with bookmark hash
+    // Only show continue button if the reader has started at least one step
     const continueBtn = document.getElementById("series-continue-btn") as HTMLAnchorElement;
-    const lastVisited = localStorage.getItem(`series-last:${seriesSlug}`);
-    const target = lastVisited ?? firstIncomplete ?? tutorialSlugs[0];
-    if (continueBtn && target && completedCount < total) {
+    if (hasAnyProgress && completedCount < total) {
+      const lastVisited = localStorage.getItem(`series-last:${seriesSlug}`);
+      const target = lastVisited ?? tutorialSlugs[0];
       const bookmark = localStorage.getItem(`tutorial-bookmark:${target}`) ?? "";
       continueBtn.href = `/tutorials/${target}${bookmark ? "#" + bookmark : ""}`;
       continueBtn.style.display = "inline-flex";

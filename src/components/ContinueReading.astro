@@ -26,16 +26,32 @@ const { allSeries } = Astro.props;
     let hasCards = false;
 
     allSeries.forEach((series) => {
-      const lastVisited = localStorage.getItem(`series-last:${series.slug}`);
-      if (!lastVisited) return;
-
-      // Count progress
+      // Check if any steps have actually been started
+      let hasAnyProgress = false;
       let completed = 0;
       series.tutorialSlugs.forEach((slug) => {
-        if (localStorage.getItem(`tutorial-complete:${slug}`)) completed++;
+        if (localStorage.getItem(`tutorial-complete:${slug}`)) {
+          completed++;
+          hasAnyProgress = true;
+        }
+        try {
+          const raw = localStorage.getItem(`tutorial-progress:${slug}`);
+          if (raw) {
+            const steps = JSON.parse(raw);
+            if (Object.values(steps).some((v) => v === true)) {
+              hasAnyProgress = true;
+            }
+          }
+        } catch {}
       });
+
+      if (!hasAnyProgress) return; // never started
+
       const total = series.tutorialSlugs.length;
       if (completed >= total) return; // all done
+
+      const lastVisited = localStorage.getItem(`series-last:${series.slug}`);
+      if (!lastVisited) return;
 
       const pct = Math.round((completed / total) * 100);
 
