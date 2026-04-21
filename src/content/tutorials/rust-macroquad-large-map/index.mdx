@@ -1,0 +1,677 @@
+---
+title: "Asteroid Dodger: Large Map and Minimap"
+description: "Expand the game world beyond the screen with a camera system and add a corner minimap radar to your Rust asteroid dodger."
+difficulty: intermediate
+topics: ["Rust", "macroquad", "game dev", "camera", "UI"]
+publishDate: 2026-04-12
+---
+
+This tutorial picks up where the [power-ups and shop tutorial](/tutorials/rust-macroquad-powerups-shop) left off. The game currently takes place on a single screen — asteroids spawn from the edges and the ship wraps around. This tutorial expands the world to a 4000x4000 pixel arena, adds a camera that follows the player, and draws a minimap radar so you can see what's beyond the viewport.
+
+## What you'll add
+
+- A 4000x4000 world with the camera centered on the player
+- World-space vs screen-space rendering (game objects scroll, HUD stays fixed)
+- Asteroids that spawn in a ring around the player instead of from screen edges
+- A minimap in the corner showing asteroids, power-ups, and the viewport rectangle
+
+## Milestones overview
+
+<div className="steps-grid">
+  <div className="step-card">
+    <span className="step-num">Milestone 1</span>
+    <span className="step-name">Camera System</span>
+    <span className="step-desc">Follow-camera, world bounds, HUD overlay</span>
+  </div>
+  <div className="step-card">
+    <span className="step-num">Milestone 2</span>
+    <span className="step-name">Minimap</span>
+    <span className="step-desc">Radar display with dots and viewport rect</span>
+  </div>
+</div>
+
+## Prerequisites
+
+- Completed the [power-ups and shop tutorial](/tutorials/rust-macroquad-powerups-shop)
+- Project compiles and runs with weapons, bombs, power-ups, and shop
+
+---
+
+## Milestone 1 — Camera system
+
+<span className="step-badge">Milestone 1 of 2</span>
+
+### Step 1 — Follow the player with Camera2D
+
+Add world size constants to `src/game.rs`:
+
+```rust
+pub const WORLD_W: f32 = 4000.0;
+pub const WORLD_H: f32 = 4000.0;
+```
+
+macroquad's `Camera2D` transforms world coordinates to screen coordinates. Set it at the start of each frame's draw so all game objects render relative to the camera:
+
+```rust
+use macroquad::camera::{set_camera, set_default_camera, Camera2D};
+```
+
+In `Game::draw`, after `clear_background(BLACK)` and before drawing any game objects (particles, asteroids, etc.), add:
+
+```rust
+// World-space camera — centers viewport on the player
+let camera = Camera2D {
+    target: self.player.pos,
+    zoom: Vec2::new(2.0 / screen_width(), 2.0 / screen_height()),
+    ..Default::default()
+};
+set_camera(&camera);
+```
+
+All subsequent draw calls (particles, asteroids, bullets, bombs, player) now render in world space — they scroll as the player moves. The `zoom` values give 1:1 pixel mapping at the current window size.
+
+<div className="callout callout-info">
+  <span className="callout-title">Two coordinate spaces</span>
+  <p>
+    With a camera active, there are two coordinate spaces. <strong>World space</strong>
+    is where game objects live (0..4000 in both axes). <strong>Screen space</strong> is
+    where HUD elements live (0..screen_width, 0..screen_height). You switch between them
+    with <code>set_camera</code> and <code>set_default_camera</code>.
+  </p>
+</div>
+
+### Step 2 — Screen-space HUD and world bounds
+
+After drawing all game objects, switch back to screen coordinates for the HUD. Add `set_default_camera()` before any HUD drawing:
+
+```rust
+// Done drawing world objects — switch to screen space for HUD
+set_default_camera();
+
+draw_text(
+    &format!("FPS: {}", get_fps()),
+    screen_width() - 90.0, 24.0, 20.0, DARKGREEN,
+);
+draw_text(&format!("Score: {}", self.score as u32), 20.0, 24.0, 24.0, WHITE);
+// ... HP bar, weapon indicator, bomb count, high score — all unchanged
+```
+
+**`src/player.rs`** — replace screen wrapping with world-edge clamping. In `update`, replace the wrapping block:
+
+```rust
+// Replace screen wrapping with world clamping
+use crate::game::{WORLD_W, WORLD_H};
+
+// Clamp to world bounds
+self.pos.x = self.pos.x.clamp(0.0, WORLD_W);
+self.pos.y = self.pos.y.clamp(0.0, WORLD_H);
+```
+
+**`src/asteroid.rs`** — change spawning from screen edges to a ring around a target position. Update `spawn` to take a `center` parameter:
+
+```rust
+pub fn spawn_around(center: Vec2) -> Self {
+    let angle = rand::gen_range(0.0f32, std::f32::consts::TAU);
+    let dist = rand::gen_range(600.0f32, 800.0);
+    let pos = center + Vec2::from_angle(angle) * dist;
+
+    let target = center + Vec2::new(
+        rand::gen_range(-200.0f32, 200.0),
+        rand::gen_range(-200.0f32, 200.0),
+    );
+    let dir    = (target - pos).normalize_or_zero();
+    let speed  = rand::gen_range(60.0f32, 160.0);
+    let radius = rand::gen_range(20.0f32, 50.0);
+    let n      = rand::gen_range(7u32, 13) as usize;
+    let vertices = (0..n)
+        .map(|i| {
+            let a = (i as f32 / n as f32) * std::f32::consts::TAU;
+            let r = radius * rand::gen_range(0.7f32, 1.3);
+            Vec2::from_angle(a) * r
+        })
+        .collect();
+    Asteroid { pos, vel: dir * speed, radius, vertices, generation: 0 }
+}
+```
+
+Keep the original `spawn()` method (it still works for the earlier tutorials) and add `spawn_around` alongside it.
+
+Update `is_off_screen` to use distance from a point rather than screen bounds:
+
+```rust
+pub fn is_far_from(&self, center: Vec2) -> bool {
+    self.pos.distance(center) > 1200.0
+}
+```
+
+**`src/game.rs`** — update the spawning call and cleanup:
+
+```rust
+// In update(), replace Asteroid::spawn() with:
+self.asteroids.push(Asteroid::spawn_around(self.player.pos));
+
+// Replace the retain call:
+let player_pos = self.player.pos;
+self.asteroids.retain(|a| !a.is_far_from(player_pos));
+```
+
+Update the grid to use the world size:
+
+```rust
+// In new() and reset():
+grid: Grid::new(WORLD_W, WORLD_H, 120.0),
+```
+
+<div className="callout callout-warning">
+  <span className="callout-title">Grid size</span>
+  <p>
+    A 4000x4000 world with 120px cells creates a 34x34 grid — 1156 cells. Each cell
+    stores a <code>Vec&lt;usize&gt;</code> but most will be empty. This is fine for
+    this scale. For much larger worlds you'd want a hash-based grid that only allocates
+    occupied cells.
+  </p>
+</div>
+
+<div className="callout callout-tip">
+  <span className="callout-title">Run it</span>
+  <p>
+    <code>cargo run</code> — the ship now moves through a large world. Asteroids spawn
+    around you and drift past. The HUD stays fixed on screen while everything else
+    scrolls. Flying to the edge of the world stops the ship rather than wrapping.
+  </p>
+</div>
+
+---
+
+## Milestone 2 — Minimap
+
+<span className="step-badge">Milestone 2 of 2</span>
+
+### Step 3 — Draw the radar
+
+Add a `draw_minimap` method to `Game`. It draws in screen space (after `set_default_camera`), so call it from `draw` alongside the other HUD elements:
+
+```rust
+fn draw_minimap(&self) {
+    let size = 160.0;
+    let mx = screen_width() - size - 16.0;
+    let my = screen_height() - size - 16.0;
+    let scale_x = size / WORLD_W;
+    let scale_y = size / WORLD_H;
+
+    // Semi-transparent background
+    draw_rectangle(mx, my, size, size, Color::new(0.0, 0.0, 0.0, 0.6));
+    draw_rectangle_lines(mx, my, size, size, 1.0, GRAY);
+
+    // Asteroid dots
+    for asteroid in &self.asteroids {
+        let ax = mx + asteroid.pos.x * scale_x;
+        let ay = my + asteroid.pos.y * scale_y;
+        let r = (asteroid.radius * scale_x).max(1.0);
+        draw_circle(ax, ay, r, Color::new(0.5, 0.5, 0.5, 0.8));
+    }
+
+    // Power-up dots
+    for powerup in &self.powerups {
+        let px = mx + powerup.pos.x * scale_x;
+        let py = my + powerup.pos.y * scale_y;
+        draw_circle(px, py, 2.5, powerup.kind.color());
+    }
+
+    // Bomb dots
+    for bomb in &self.bombs {
+        let bx = mx + bomb.pos.x * scale_x;
+        let by = my + bomb.pos.y * scale_y;
+        draw_circle(bx, by, 2.0, RED);
+    }
+
+    // Viewport rectangle — shows what the player can currently see
+    let vw = screen_width() * scale_x;
+    let vh = screen_height() * scale_y;
+    let vx = mx + self.player.pos.x * scale_x - vw / 2.0;
+    let vy = my + self.player.pos.y * scale_y - vh / 2.0;
+    draw_rectangle_lines(vx, vy, vw, vh, 1.0, Color::new(1.0, 1.0, 1.0, 0.5));
+
+    // Player dot (drawn last so it's on top)
+    let px = mx + self.player.pos.x * scale_x;
+    let py = my + self.player.pos.y * scale_y;
+    draw_circle(px, py, 3.0, WHITE);
+}
+```
+
+Call it in `draw`, after the HUD elements and before the game-over overlay:
+
+```rust
+self.draw_minimap();
+```
+
+<div className="callout callout-info">
+  <span className="callout-title">Scale factor</span>
+  <p>
+    The minimap is 160px wide and the world is 4000px, so the scale is 0.04 — every
+    world pixel maps to 0.04 screen pixels. The viewport rectangle shows the player's
+    current view relative to the whole map, helping with orientation in the larger world.
+  </p>
+</div>
+
+### Step 4 — Power-up color method
+
+If your `PowerUpType` doesn't already have a `color()` method from Tutorial 6, add one to `src/powerup.rs`:
+
+```rust
+pub fn color(&self) -> Color {
+    match self {
+        Self::WeaponUpgrade => GREEN,
+        Self::BombRefill => RED,
+        Self::Shield => SKYBLUE,
+        Self::ScoreBoost => YELLOW,
+    }
+}
+```
+
+This is used by the minimap to color-code power-up dots so the player can spot them from the radar.
+
+<div className="callout callout-tip">
+  <span className="callout-title">Run it</span>
+  <p>
+    <code>cargo run</code> — a minimap appears in the bottom-right corner. Gray dots
+    are asteroids, colored dots are power-ups, and a white rectangle shows your current
+    viewport. The white dot in the center is your ship. As you fly around the 4000x4000
+    world, the minimap updates in real time.
+  </p>
+</div>
+
+---
+
+## Complete listing
+
+Modified files: `game.rs` (camera, minimap, world constants, spawn_around), `player.rs` (world clamping), `asteroid.rs` (spawn_around, is_far_from). All other files (`main.rs`, `collision.rs`, `bullet.rs`, `bomb.rs`, `weapon.rs`, `sound.rs`, `particle.rs`, `grid.rs`, `powerup.rs`) are unchanged from the previous tutorial.
+
+**`src/player.rs`**
+
+```rust
+use macroquad::prelude::*;
+use crate::collision::Aabb;
+use crate::bullet::Bullet;
+use crate::bomb::Bomb;
+use crate::game::{Keybindings, WORLD_W, WORLD_H};
+use crate::weapon::WeaponType;
+
+pub const PLAYER_RADIUS: f32 = 16.0;
+pub const PLAYER_MASS: f32 = 500.0;
+
+const THRUST: f32 = 300.0;
+const DRAG: f32 = 1.8;
+const ROTATE_SPEED: f32 = 3.0;
+const MAX_SPEED: f32 = 420.0;
+
+pub struct Player {
+    pub pos: Vec2,
+    pub vel: Vec2,
+    pub hp: f32,
+    pub max_hp: f32,
+    pub invincibility: f32,
+    angle: f32,
+}
+
+impl Player {
+    pub fn new() -> Self {
+        Self {
+            pos: Vec2::new(WORLD_W / 2.0, WORLD_H / 2.0),
+            vel: Vec2::ZERO,
+            hp: 100.0,
+            max_hp: 100.0,
+            invincibility: 0.0,
+            angle: -std::f32::consts::FRAC_PI_2,
+        }
+    }
+
+    pub fn update(&mut self, dt: f32, keys: &Keybindings) {
+        if is_key_down(keys.rotate_left) { self.angle -= ROTATE_SPEED * dt; }
+        if is_key_down(keys.rotate_right) { self.angle += ROTATE_SPEED * dt; }
+
+        if is_key_down(keys.thrust) {
+            self.vel += Vec2::from_angle(self.angle) * THRUST * dt;
+        }
+
+        self.vel *= 1.0 - DRAG * dt;
+        if self.vel.length() > MAX_SPEED {
+            self.vel = self.vel.normalize() * MAX_SPEED;
+        }
+
+        self.pos += self.vel * dt;
+
+        // Clamp to world bounds
+        self.pos.x = self.pos.x.clamp(0.0, WORLD_W);
+        self.pos.y = self.pos.y.clamp(0.0, WORLD_H);
+
+        if self.invincibility > 0.0 {
+            self.invincibility -= dt;
+        }
+    }
+
+    pub fn aabb(&self) -> Aabb {
+        Aabb::from_center_radius(self.pos, PLAYER_RADIUS)
+    }
+
+    pub fn spawn_bullets(&self, weapon: WeaponType) -> Vec<Bullet> {
+        let forward = Vec2::from_angle(self.angle);
+        let tip = self.pos + forward * 22.0;
+        match weapon {
+            WeaponType::Blaster => {
+                vec![Bullet::new(tip, self.angle)]
+            }
+            WeaponType::Spread => {
+                let spread = 0.15;
+                vec![
+                    Bullet::new_with(tip, self.angle - spread, 550.0, false, 2.5, ORANGE),
+                    Bullet::new_with(tip, self.angle, 600.0, false, 2.5, ORANGE),
+                    Bullet::new_with(tip, self.angle + spread, 550.0, false, 2.5, ORANGE),
+                ]
+            }
+            WeaponType::Rapid => {
+                vec![Bullet::new_with(tip, self.angle, 700.0, false, 1.5, SKYBLUE)]
+            }
+            WeaponType::Laser => {
+                vec![Bullet::new_with(tip, self.angle, 900.0, true, 1.5, LIME)]
+            }
+        }
+    }
+
+    pub fn spawn_bomb(&self) -> Bomb {
+        let forward = Vec2::from_angle(self.angle);
+        Bomb::new(self.pos + forward * 22.0, self.angle)
+    }
+
+    pub fn draw(&self) {
+        if self.invincibility > 0.0 && (self.invincibility * 8.0) as u32 % 2 == 0 {
+            return;
+        }
+        let forward = Vec2::from_angle(self.angle);
+        let side = Vec2::new(-forward.y, forward.x);
+        draw_triangle(
+            self.pos + forward * 20.0,
+            self.pos - forward * 10.0 + side * 12.0,
+            self.pos - forward * 10.0 - side * 12.0,
+            WHITE,
+        );
+    }
+}
+```
+
+**`src/asteroid.rs`**
+
+```rust
+use macroquad::prelude::*;
+use crate::collision::Aabb;
+
+pub struct Asteroid {
+    pub pos: Vec2,
+    pub vel: Vec2,
+    pub radius: f32,
+    pub vertices: Vec<Vec2>,
+    pub generation: u8,
+}
+
+impl Asteroid {
+    pub fn spawn() -> Self {
+        let (sw, sh) = (screen_width(), screen_height());
+        let pos = match rand::gen_range(0u32, 4) {
+            0 => Vec2::new(rand::gen_range(0.0, sw), -60.0),
+            1 => Vec2::new(sw + 60.0, rand::gen_range(0.0, sh)),
+            2 => Vec2::new(rand::gen_range(0.0, sw), sh + 60.0),
+            _ => Vec2::new(-60.0, rand::gen_range(0.0, sh)),
+        };
+        let target = Vec2::new(
+            sw / 2.0 + rand::gen_range(-150.0f32, 150.0),
+            sh / 2.0 + rand::gen_range(-150.0f32, 150.0),
+        );
+        let dir    = (target - pos).normalize_or_zero();
+        let speed  = rand::gen_range(60.0f32, 160.0);
+        let radius = rand::gen_range(20.0f32, 50.0);
+        let n      = rand::gen_range(7u32, 13) as usize;
+        let vertices = (0..n)
+            .map(|i| {
+                let angle = (i as f32 / n as f32) * std::f32::consts::TAU;
+                let r = radius * rand::gen_range(0.7f32, 1.3);
+                Vec2::from_angle(angle) * r
+            })
+            .collect();
+        Asteroid { pos, vel: dir * speed, radius, vertices, generation: 0 }
+    }
+
+    pub fn spawn_around(center: Vec2) -> Self {
+        let angle = rand::gen_range(0.0f32, std::f32::consts::TAU);
+        let dist = rand::gen_range(600.0f32, 800.0);
+        let pos = center + Vec2::from_angle(angle) * dist;
+        let target = center + Vec2::new(
+            rand::gen_range(-200.0f32, 200.0),
+            rand::gen_range(-200.0f32, 200.0),
+        );
+        let dir    = (target - pos).normalize_or_zero();
+        let speed  = rand::gen_range(60.0f32, 160.0);
+        let radius = rand::gen_range(20.0f32, 50.0);
+        let n      = rand::gen_range(7u32, 13) as usize;
+        let vertices = (0..n)
+            .map(|i| {
+                let a = (i as f32 / n as f32) * std::f32::consts::TAU;
+                let r = radius * rand::gen_range(0.7f32, 1.3);
+                Vec2::from_angle(a) * r
+            })
+            .collect();
+        Asteroid { pos, vel: dir * speed, radius, vertices, generation: 0 }
+    }
+
+    pub fn spawn_fragment(parent_pos: Vec2, parent_vel: Vec2, parent_radius: f32, kick_dir: Vec2) -> Self {
+        let radius = parent_radius * rand::gen_range(0.45f32, 0.55);
+        let n = rand::gen_range(5u32, 9) as usize;
+        let vertices = (0..n)
+            .map(|i| {
+                let angle = (i as f32 / n as f32) * std::f32::consts::TAU;
+                let r = radius * rand::gen_range(0.7f32, 1.3);
+                Vec2::from_angle(angle) * r
+            })
+            .collect();
+        let vel = parent_vel + kick_dir * rand::gen_range(40.0f32, 100.0);
+        Asteroid {
+            pos: parent_pos + kick_dir * radius,
+            vel,
+            radius,
+            vertices,
+            generation: 1,
+        }
+    }
+
+    pub fn update(&mut self, dt: f32) {
+        self.pos += self.vel * dt;
+    }
+
+    pub fn is_off_screen(&self) -> bool {
+        let margin = 200.0;
+        let (sw, sh) = (screen_width(), screen_height());
+        self.pos.x < -margin || self.pos.x > sw + margin
+            || self.pos.y < -margin || self.pos.y > sh + margin
+    }
+
+    pub fn is_far_from(&self, center: Vec2) -> bool {
+        self.pos.distance(center) > 1200.0
+    }
+
+    pub fn aabb(&self) -> Aabb {
+        let mut min = Vec2::splat(f32::MAX);
+        let mut max = Vec2::splat(f32::MIN);
+        for v in &self.vertices {
+            let world = self.pos + *v;
+            min = min.min(world);
+            max = max.max(world);
+        }
+        Aabb { min, max }
+    }
+
+    pub fn mass(&self) -> f32 {
+        self.radius * self.radius
+    }
+
+    pub fn draw(&self) {
+        let n = self.vertices.len();
+        for i in 0..n {
+            let a = self.pos + self.vertices[i];
+            let b = self.pos + self.vertices[(i + 1) % n];
+            draw_triangle(self.pos, a, b, GRAY);
+            draw_line(a.x, a.y, b.x, b.y, 1.5, LIGHTGRAY);
+        }
+    }
+}
+
+pub fn resolve_collisions(asteroids: &mut [Asteroid], pairs: &[(usize, usize)]) {
+    for &(i, j) in pairs {
+        if i >= asteroids.len() || j >= asteroids.len() { continue; }
+
+        let (left, right) = asteroids.split_at_mut(j);
+        let a = &mut left[i];
+        let b = &mut right[0];
+
+        if !a.aabb().overlaps(&b.aabb()) { continue; }
+
+        let dist = a.pos.distance(b.pos);
+        let min_dist = a.radius + b.radius;
+        if dist >= min_dist || dist < 0.001 { continue; }
+
+        let normal = (b.pos - a.pos) / dist;
+        let vel_along = (a.vel - b.vel).dot(normal);
+        if vel_along <= 0.0 { continue; }
+
+        let ma = a.mass();
+        let mb = b.mass();
+        let j_imp = 2.0 * vel_along / (1.0 / ma + 1.0 / mb);
+        a.vel -= normal * (j_imp / ma);
+        b.vel += normal * (j_imp / mb);
+
+        let overlap = min_dist - dist;
+        let correction = normal * overlap * 0.5;
+        a.pos -= correction;
+        b.pos += correction;
+    }
+}
+```
+
+**`src/game.rs`** — showing only the changes. The full file is identical to the previous tutorial's `game.rs` with these modifications:
+
+Add at the top of the file:
+
+```rust
+use macroquad::camera::{set_camera, set_default_camera, Camera2D};
+
+pub const WORLD_W: f32 = 4000.0;
+pub const WORLD_H: f32 = 4000.0;
+```
+
+In `reset()`, update the grid:
+
+```rust
+self.grid = Grid::new(WORLD_W, WORLD_H, 120.0);
+```
+
+In `new()`, update the grid:
+
+```rust
+grid: Grid::new(WORLD_W, WORLD_H, 120.0),
+```
+
+In `update()`, change the asteroid spawn call:
+
+```rust
+self.asteroids.push(Asteroid::spawn_around(self.player.pos));
+```
+
+Change the asteroid retain call:
+
+```rust
+let player_pos = self.player.pos;
+self.asteroids.retain(|a| !a.is_far_from(player_pos));
+```
+
+In `draw()`, add camera setup after `clear_background(BLACK)` and before drawing world objects:
+
+```rust
+// Set world-space camera
+let camera = Camera2D {
+    target: self.player.pos,
+    zoom: Vec2::new(2.0 / screen_width(), 2.0 / screen_height()),
+    ..Default::default()
+};
+set_camera(&camera);
+
+// Draw world objects (particles, asteroids, bullets, bombs, powerups, player)
+self.particles.draw();
+for asteroid in &self.asteroids { asteroid.draw(); }
+for bullet in &self.bullets { bullet.draw(); }
+for bomb in &self.bombs { bomb.draw(); }
+for powerup in &self.powerups { powerup.draw(); }
+self.player.draw();
+
+// Switch to screen space for HUD
+set_default_camera();
+
+// All HUD drawing below (score, HP bar, weapon, bombs, FPS, high score)
+```
+
+Add the minimap call after HUD drawing, before the game-over overlay:
+
+```rust
+self.draw_minimap();
+```
+
+Add the `draw_minimap` method to `impl Game`:
+
+```rust
+fn draw_minimap(&self) {
+    let size = 160.0;
+    let mx = screen_width() - size - 16.0;
+    let my = screen_height() - size - 16.0;
+    let scale_x = size / WORLD_W;
+    let scale_y = size / WORLD_H;
+
+    draw_rectangle(mx, my, size, size, Color::new(0.0, 0.0, 0.0, 0.6));
+    draw_rectangle_lines(mx, my, size, size, 1.0, GRAY);
+
+    for asteroid in &self.asteroids {
+        let ax = mx + asteroid.pos.x * scale_x;
+        let ay = my + asteroid.pos.y * scale_y;
+        let r = (asteroid.radius * scale_x).max(1.0);
+        draw_circle(ax, ay, r, Color::new(0.5, 0.5, 0.5, 0.8));
+    }
+
+    for powerup in &self.powerups {
+        let px = mx + powerup.pos.x * scale_x;
+        let py = my + powerup.pos.y * scale_y;
+        draw_circle(px, py, 2.5, powerup.kind.color());
+    }
+
+    for bomb in &self.bombs {
+        let bx = mx + bomb.pos.x * scale_x;
+        let by = my + bomb.pos.y * scale_y;
+        draw_circle(bx, by, 2.0, RED);
+    }
+
+    let vw = screen_width() * scale_x;
+    let vh = screen_height() * scale_y;
+    let vx = mx + self.player.pos.x * scale_x - vw / 2.0;
+    let vy = my + self.player.pos.y * scale_y - vh / 2.0;
+    draw_rectangle_lines(vx, vy, vw, vh, 1.0, Color::new(1.0, 1.0, 1.0, 0.5));
+
+    let px = mx + self.player.pos.x * scale_x;
+    let py = my + self.player.pos.y * scale_y;
+    draw_circle(px, py, 3.0, WHITE);
+}
+```
+
+## Next steps
+
+This completes the asteroid dodger tutorial series. Here are ideas for further development:
+
+- **Parallax background** — draw star layers at different scroll speeds behind the game world for a sense of depth
+- **Asteroid density zones** — spawn tighter clusters in some regions, creating dangerous corridors and safe havens
+- **Multiple arenas** — warp gates that move the player to new worlds with different asteroid densities and sizes
+- **Persistent save file** — write high score and settings to disk with `std::fs::write` and load on startup
+- **Networked multiplayer** — macroquad supports WASM; build a shared arena with WebSocket state sync

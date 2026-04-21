@@ -1,0 +1,1360 @@
+---
+title: "Asteroid Dodger: Weapons and Bombs"
+description: "Add a weapon system with four fire modes and deployable bombs to your Rust asteroid dodger."
+difficulty: intermediate
+topics: ["Rust", "macroquad", "game dev", "weapons"]
+publishDate: 2026-04-12
+---
+
+This tutorial picks up where the [menu and settings tutorial](/tutorials/rust-macroquad-menu-settings) left off. The ship has one fire mode — a single stream of bullets. This tutorial adds three more weapon types and a deployable bomb, giving the player tactical choices.
+
+## What you'll add
+
+- A `WeaponType` enum with four fire modes: Blaster, Spread, Rapid, and Laser
+- Number keys to switch weapons, with HUD display
+- A `Bomb` struct with slow travel, timed fuse, and area-of-effect explosion
+- Limited bomb inventory shown on the HUD
+
+## Milestones overview
+
+<div className="steps-grid">
+  <div className="step-card">
+    <span className="step-num">Milestone 1</span>
+    <span className="step-name">Weapon System</span>
+    <span className="step-desc">Four fire modes with distinct behaviors</span>
+  </div>
+  <div className="step-card">
+    <span className="step-num">Milestone 2</span>
+    <span className="step-name">Bombs</span>
+    <span className="step-desc">Deployable area-damage explosives</span>
+  </div>
+</div>
+
+## Prerequisites
+
+- Completed the [menu and settings tutorial](/tutorials/rust-macroquad-menu-settings)
+- Project compiles and runs with sound, particles, spatial grid, and menu
+
+---
+
+## Milestone 1 — Weapon system
+
+<span className="step-badge">Milestone 1 of 2</span>
+
+### Step 1 — Weapon types (`src/weapon.rs`)
+
+Create `src/weapon.rs` and register it in `main.rs`:
+
+```rust
+mod weapon;
+```
+
+```rust
+// src/weapon.rs
+
+#[derive(Clone, Copy, PartialEq)]
+pub enum WeaponType {
+    Blaster,
+    Spread,
+    Rapid,
+    Laser,
+}
+
+impl WeaponType {
+    pub const ALL: [WeaponType; 4] = [
+        Self::Blaster,
+        Self::Spread,
+        Self::Rapid,
+        Self::Laser,
+    ];
+
+    pub fn cooldown(&self) -> f32 {
+        match self {
+            Self::Blaster => 0.15,
+            Self::Spread => 0.4,
+            Self::Rapid => 0.05,
+            Self::Laser => 0.12,
+        }
+    }
+
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::Blaster => "Blaster",
+            Self::Spread => "Spread",
+            Self::Rapid => "Rapid",
+            Self::Laser => "Laser",
+        }
+    }
+
+    pub fn color(&self) -> macroquad::prelude::Color {
+        use macroquad::prelude::*;
+        match self {
+            Self::Blaster => YELLOW,
+            Self::Spread => ORANGE,
+            Self::Rapid => SKYBLUE,
+            Self::Laser => LIME,
+        }
+    }
+}
+```
+
+Each weapon has a distinct fire rate and color. Spread fires slowly but covers a wide area. Rapid fires very fast but each bullet is small. Laser pierces through asteroids without being consumed.
+
+### Step 2 — Expand bullets (`src/bullet.rs`)
+
+Add `piercing` and `radius` fields to the `Bullet` struct so different weapons produce different projectiles:
+
+```rust
+// src/bullet.rs
+use macroquad::prelude::*;
+
+const SPEED: f32 = 600.0;
+
+pub struct Bullet {
+    pub pos: Vec2,
+    vel: Vec2,
+    pub piercing: bool,
+    pub radius: f32,
+    pub color: Color,
+}
+
+impl Bullet {
+    pub fn new(pos: Vec2, angle: f32) -> Self {
+        Self {
+            pos,
+            vel: Vec2::from_angle(angle) * SPEED,
+            piercing: false,
+            radius: 3.0,
+            color: YELLOW,
+        }
+    }
+
+    pub fn new_with(pos: Vec2, angle: f32, speed: f32, piercing: bool, radius: f32, color: Color) -> Self {
+        Self {
+            pos,
+            vel: Vec2::from_angle(angle) * speed,
+            piercing,
+            radius,
+            color,
+        }
+    }
+
+    pub fn update(&mut self, dt: f32) {
+        self.pos += self.vel * dt;
+    }
+
+    pub fn is_off_screen(&self) -> bool {
+        let (sw, sh) = (screen_width(), screen_height());
+        self.pos.x < 0.0 || self.pos.x > sw || self.pos.y < 0.0 || self.pos.y > sh
+    }
+
+    pub fn draw(&self) {
+        draw_circle(self.pos.x, self.pos.y, self.radius, self.color);
+    }
+}
+```
+
+The existing `new()` constructor still works for the default blaster. `new_with()` gives full control for other weapon types.
+
+### Step 3 — Weapon-specific fire patterns (`src/player.rs` + `src/game.rs`)
+
+**`src/player.rs`** — replace the single `spawn_bullet` method with one that takes a weapon type:
+
+```rust
+use crate::weapon::WeaponType;
+```
+
+```rust
+pub fn spawn_bullets(&self, weapon: WeaponType) -> Vec<Bullet> {
+    let forward = Vec2::from_angle(self.angle);
+    let tip = self.pos + forward * 22.0;
+    match weapon {
+        WeaponType::Blaster => {
+            vec![Bullet::new(tip, self.angle)]
+        }
+        WeaponType::Spread => {
+            let spread = 0.15; // radians, ~8.5 degrees
+            vec![
+                Bullet::new_with(tip, self.angle - spread, 550.0, false, 2.5, ORANGE),
+                Bullet::new_with(tip, self.angle, 600.0, false, 2.5, ORANGE),
+                Bullet::new_with(tip, self.angle + spread, 550.0, false, 2.5, ORANGE),
+            ]
+        }
+        WeaponType::Rapid => {
+            vec![Bullet::new_with(tip, self.angle, 700.0, false, 1.5, SKYBLUE)]
+        }
+        WeaponType::Laser => {
+            vec![Bullet::new_with(tip, self.angle, 900.0, true, 1.5, LIME)]
+        }
+    }
+}
+```
+
+**`src/game.rs`** — add weapon state and update the fire logic:
+
+```rust
+use crate::weapon::WeaponType;
+```
+
+Add to the `Game` struct:
+
+```rust
+current_weapon: WeaponType,
+```
+
+Initialise in `new()` and `reset()`:
+
+```rust
+current_weapon: WeaponType::Blaster,
+```
+
+Replace the shooting block in `update` with weapon-aware logic:
+
+```rust
+// Weapon switching (1-4 keys, but only when not in settings rebind mode)
+if is_key_pressed(KeyCode::Key1) { self.current_weapon = WeaponType::Blaster; }
+if is_key_pressed(KeyCode::Key2) { self.current_weapon = WeaponType::Spread; }
+if is_key_pressed(KeyCode::Key3) { self.current_weapon = WeaponType::Rapid; }
+if is_key_pressed(KeyCode::Key4) { self.current_weapon = WeaponType::Laser; }
+
+self.shoot_cooldown -= dt;
+if is_key_down(self.keybindings.shoot) && self.shoot_cooldown <= 0.0 {
+    let new_bullets = self.player.spawn_bullets(self.current_weapon);
+    self.bullets.extend(new_bullets);
+    self.shoot_cooldown = self.current_weapon.cooldown();
+    self.sounds.play(&self.sounds.shoot.clone());
+}
+```
+
+Update `update_bullets` — laser bullets are piercing, so they don't get consumed on hit. Change the bullet retain logic:
+
+```rust
+self.bullets.retain(|bullet| {
+    let mut hit = false;
+    for (i, asteroid) in self.asteroids.iter().enumerate() {
+        if collision::point_in_polygon(bullet.pos, asteroid.pos, &asteroid.vertices) {
+            if !asteroids_hit.contains(&i) {
+                asteroids_hit.push(i);
+            }
+            hit = true;
+            if !bullet.piercing { return false; } // consumed
+        }
+    }
+    true // piercing bullets or misses survive
+});
+```
+
+Add weapon display to `Game::draw`, near the score text:
+
+```rust
+draw_text(
+    &format!("[{}] {}", 
+        WeaponType::ALL.iter().position(|w| *w == self.current_weapon).unwrap() + 1,
+        self.current_weapon.label()
+    ),
+    20.0, 70.0, 20.0, self.current_weapon.color(),
+);
+```
+
+<div className="callout callout-info">
+  <span className="callout-title">Keybinding conflict</span>
+  <p>
+    Weapon switching uses hardcoded number keys (1-4) while the settings screen also
+    uses 1-4 for rebinding. This works because weapon switching only runs in the
+    <code>Playing</code> state, and rebinding only runs in <code>Settings</code>. The
+    state machine prevents conflicts.
+  </p>
+</div>
+
+<div className="callout callout-tip">
+  <span className="callout-title">Run it</span>
+  <p>
+    <code>cargo run</code> — press <strong>1-4</strong> to switch weapons. Blaster is
+    the familiar single shot. Spread fires a 3-bullet fan. Rapid sprays fast tiny
+    bullets. Laser fires green piercing shots that pass through asteroids, hitting
+    everything in their path.
+  </p>
+</div>
+
+---
+
+## Milestone 2 — Bombs
+
+<span className="step-badge">Milestone 2 of 2</span>
+
+### Step 4 — Bomb struct (`src/bomb.rs`)
+
+Create `src/bomb.rs` and register it in `main.rs`:
+
+```rust
+mod bomb;
+```
+
+```rust
+// src/bomb.rs
+use macroquad::prelude::*;
+
+const BOMB_SPEED: f32 = 200.0;
+const BOMB_FUSE: f32 = 2.0;
+pub const EXPLOSION_RADIUS: f32 = 150.0;
+
+pub struct Bomb {
+    pub pos: Vec2,
+    vel: Vec2,
+    pub timer: f32,
+    pub exploded: bool,
+}
+
+impl Bomb {
+    pub fn new(pos: Vec2, angle: f32) -> Self {
+        Self {
+            pos,
+            vel: Vec2::from_angle(angle) * BOMB_SPEED,
+            timer: BOMB_FUSE,
+            exploded: false,
+        }
+    }
+
+    pub fn update(&mut self, dt: f32) {
+        self.pos += self.vel * dt;
+        self.vel *= 1.0 - 1.5 * dt; // heavy drag — bombs slow down
+        self.timer -= dt;
+        if self.timer <= 0.0 {
+            self.exploded = true;
+        }
+    }
+
+    pub fn is_off_screen(&self) -> bool {
+        let margin = 200.0;
+        let (sw, sh) = (screen_width(), screen_height());
+        self.pos.x < -margin || self.pos.x > sw + margin
+            || self.pos.y < -margin || self.pos.y > sh + margin
+    }
+
+    pub fn draw(&self) {
+        // Pulsing red circle that speeds up near detonation
+        let pulse = (self.timer * 6.0).sin().abs();
+        let r = 6.0 + pulse * 2.0;
+        draw_circle(self.pos.x, self.pos.y, r, RED);
+        draw_circle_lines(self.pos.x, self.pos.y, r + 2.0, 1.0, ORANGE);
+    }
+}
+```
+
+Bombs travel slowly with heavy drag, pulsing red. The fuse counts down and triggers explosion after 2 seconds. Contact with an asteroid also triggers explosion — that's handled in `game.rs`.
+
+### Step 5 — Bomb deployment and explosion (`src/game.rs`)
+
+Add bomb state to `Game`:
+
+```rust
+use crate::bomb::{Bomb, EXPLOSION_RADIUS};
+```
+
+```rust
+pub struct Game {
+    // ... existing fields ...
+    bombs: Vec<Bomb>,
+    bomb_count: u32,
+}
+
+// In new():
+bombs: Vec::new(),
+bomb_count: 3,
+
+// In reset():
+self.bombs.clear();
+self.bomb_count = 3;
+```
+
+Add bomb deployment in `update`, after the shooting block:
+
+```rust
+if is_key_pressed(KeyCode::B) && self.bomb_count > 0 {
+    let forward = Vec2::from_angle(0.0); // bombs need player angle
+    self.bombs.push(self.player.spawn_bomb());
+    self.bomb_count -= 1;
+    self.sounds.play(&self.sounds.shoot.clone());
+}
+```
+
+**`src/player.rs`** — add `spawn_bomb`:
+
+```rust
+use crate::bomb::Bomb;
+```
+
+```rust
+pub fn spawn_bomb(&self) -> Bomb {
+    let forward = Vec2::from_angle(self.angle);
+    Bomb::new(self.pos + forward * 22.0, self.angle)
+}
+```
+
+Back in `game.rs`, add an `update_bombs` method:
+
+```rust
+fn update_bombs(&mut self) {
+    for bomb in &mut self.bombs {
+        bomb.update(get_frame_time());
+    }
+
+    // Check bomb-asteroid contact — trigger explosion
+    for bomb in &mut self.bombs {
+        if bomb.exploded { continue; }
+        for asteroid in &self.asteroids {
+            if bomb.pos.distance(asteroid.pos) < asteroid.radius {
+                bomb.exploded = true;
+                bomb.timer = 0.0;
+                break;
+            }
+        }
+    }
+
+    // Process explosions
+    let mut exploded_positions: Vec<Vec2> = Vec::new();
+    for bomb in &self.bombs {
+        if !bomb.exploded { continue; }
+        exploded_positions.push(bomb.pos);
+    }
+
+    for pos in &exploded_positions {
+        // Destroy all asteroids within explosion radius
+        let mut hit_indices: Vec<usize> = Vec::new();
+        let mut fragments: Vec<Asteroid> = Vec::new();
+        for (i, asteroid) in self.asteroids.iter().enumerate() {
+            if pos.distance(asteroid.pos) < EXPLOSION_RADIUS {
+                hit_indices.push(i);
+                if asteroid.generation == 0 {
+                    let spread = Vec2::from_angle(rand::gen_range(0.0f32, std::f32::consts::TAU));
+                    fragments.push(Asteroid::spawn_fragment(
+                        asteroid.pos, asteroid.vel, asteroid.radius, spread,
+                    ));
+                    fragments.push(Asteroid::spawn_fragment(
+                        asteroid.pos, asteroid.vel, asteroid.radius, -spread,
+                    ));
+                }
+                self.particles.burst(asteroid.pos, (asteroid.radius * 0.6) as usize, asteroid.radius * 1.5, LIGHTGRAY);
+            }
+        }
+        hit_indices.sort_unstable();
+        for i in hit_indices.into_iter().rev() {
+            self.asteroids.swap_remove(i);
+        }
+        self.asteroids.extend(fragments);
+
+        // Big explosion particles
+        self.particles.burst(*pos, 40, 200.0, RED);
+        self.particles.burst(*pos, 25, 150.0, ORANGE);
+        self.sounds.play(&self.sounds.explode.clone());
+    }
+
+    // Remove exploded bombs
+    self.bombs.retain(|b| !b.exploded && !b.is_off_screen());
+}
+```
+
+Call `update_bombs` from `update`, after `update_bullets`:
+
+```rust
+self.update_bullets();
+self.update_bombs();
+```
+
+Add bomb drawing and HUD to `Game::draw`:
+
+```rust
+// Draw bombs (with other game objects)
+for bomb in &self.bombs {
+    bomb.draw();
+}
+```
+
+Add bomb count to the HUD:
+
+```rust
+draw_text(
+    &format!("Bombs: {}", self.bomb_count),
+    20.0, 88.0, 20.0, RED,
+);
+```
+
+<div className="callout callout-info">
+  <span className="callout-title">Explosion splitting</span>
+  <p>
+    Bomb explosions use the same splitting logic as bullet hits — generation-0 asteroids
+    produce fragments, generation-1 asteroids are just destroyed. The explosion radius
+    (150px) is large enough to catch several asteroids at once, producing a satisfying
+    chain of fragments and particles.
+  </p>
+</div>
+
+<div className="callout callout-tip">
+  <span className="callout-title">Run it</span>
+  <p>
+    <code>cargo run</code> — press <strong>B</strong> to deploy a bomb. It drifts
+    forward with heavy drag, pulsing red. After 2 seconds (or on asteroid contact) it
+    explodes, destroying everything in a wide radius with a burst of red and orange
+    particles. You start with 3 bombs — the count shows on the HUD.
+  </p>
+</div>
+
+---
+
+## Complete listing
+
+The project now has 11 source files. New files: `weapon.rs`, `bomb.rs`. Modified: `bullet.rs`, `player.rs`, `game.rs`.
+
+**`src/main.rs`**
+
+```rust
+use macroquad::prelude::*;
+
+mod collision;
+mod player;
+mod asteroid;
+mod bullet;
+mod game;
+mod sound;
+mod particle;
+mod grid;
+mod weapon;
+mod bomb;
+
+use game::Game;
+use sound::Sounds;
+
+#[macroquad::main("Asteroid Dodger")]
+async fn main() {
+    let sounds = Sounds::load().await;
+    let mut game = Game::new(sounds);
+    loop {
+        game.update(get_frame_time());
+        game.draw();
+        next_frame().await;
+    }
+}
+```
+
+**`src/weapon.rs`**
+
+```rust
+#[derive(Clone, Copy, PartialEq)]
+pub enum WeaponType {
+    Blaster,
+    Spread,
+    Rapid,
+    Laser,
+}
+
+impl WeaponType {
+    pub const ALL: [WeaponType; 4] = [
+        Self::Blaster,
+        Self::Spread,
+        Self::Rapid,
+        Self::Laser,
+    ];
+
+    pub fn cooldown(&self) -> f32 {
+        match self {
+            Self::Blaster => 0.15,
+            Self::Spread => 0.4,
+            Self::Rapid => 0.05,
+            Self::Laser => 0.12,
+        }
+    }
+
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::Blaster => "Blaster",
+            Self::Spread => "Spread",
+            Self::Rapid => "Rapid",
+            Self::Laser => "Laser",
+        }
+    }
+
+    pub fn color(&self) -> macroquad::prelude::Color {
+        use macroquad::prelude::*;
+        match self {
+            Self::Blaster => YELLOW,
+            Self::Spread => ORANGE,
+            Self::Rapid => SKYBLUE,
+            Self::Laser => LIME,
+        }
+    }
+}
+```
+
+**`src/bomb.rs`**
+
+```rust
+use macroquad::prelude::*;
+
+const BOMB_SPEED: f32 = 200.0;
+const BOMB_FUSE: f32 = 2.0;
+pub const EXPLOSION_RADIUS: f32 = 150.0;
+
+pub struct Bomb {
+    pub pos: Vec2,
+    vel: Vec2,
+    pub timer: f32,
+    pub exploded: bool,
+}
+
+impl Bomb {
+    pub fn new(pos: Vec2, angle: f32) -> Self {
+        Self {
+            pos,
+            vel: Vec2::from_angle(angle) * BOMB_SPEED,
+            timer: BOMB_FUSE,
+            exploded: false,
+        }
+    }
+
+    pub fn update(&mut self, dt: f32) {
+        self.pos += self.vel * dt;
+        self.vel *= 1.0 - 1.5 * dt;
+        self.timer -= dt;
+        if self.timer <= 0.0 {
+            self.exploded = true;
+        }
+    }
+
+    pub fn is_off_screen(&self) -> bool {
+        let margin = 200.0;
+        let (sw, sh) = (screen_width(), screen_height());
+        self.pos.x < -margin || self.pos.x > sw + margin
+            || self.pos.y < -margin || self.pos.y > sh + margin
+    }
+
+    pub fn draw(&self) {
+        let pulse = (self.timer * 6.0).sin().abs();
+        let r = 6.0 + pulse * 2.0;
+        draw_circle(self.pos.x, self.pos.y, r, RED);
+        draw_circle_lines(self.pos.x, self.pos.y, r + 2.0, 1.0, ORANGE);
+    }
+}
+```
+
+**`src/bullet.rs`**
+
+```rust
+use macroquad::prelude::*;
+
+const SPEED: f32 = 600.0;
+
+pub struct Bullet {
+    pub pos: Vec2,
+    vel: Vec2,
+    pub piercing: bool,
+    pub radius: f32,
+    pub color: Color,
+}
+
+impl Bullet {
+    pub fn new(pos: Vec2, angle: f32) -> Self {
+        Self {
+            pos,
+            vel: Vec2::from_angle(angle) * SPEED,
+            piercing: false,
+            radius: 3.0,
+            color: YELLOW,
+        }
+    }
+
+    pub fn new_with(pos: Vec2, angle: f32, speed: f32, piercing: bool, radius: f32, color: Color) -> Self {
+        Self {
+            pos,
+            vel: Vec2::from_angle(angle) * speed,
+            piercing,
+            radius,
+            color,
+        }
+    }
+
+    pub fn update(&mut self, dt: f32) {
+        self.pos += self.vel * dt;
+    }
+
+    pub fn is_off_screen(&self) -> bool {
+        let (sw, sh) = (screen_width(), screen_height());
+        self.pos.x < 0.0 || self.pos.x > sw || self.pos.y < 0.0 || self.pos.y > sh
+    }
+
+    pub fn draw(&self) {
+        draw_circle(self.pos.x, self.pos.y, self.radius, self.color);
+    }
+}
+```
+
+**`src/player.rs`**
+
+```rust
+use macroquad::prelude::*;
+use crate::collision::Aabb;
+use crate::bullet::Bullet;
+use crate::bomb::Bomb;
+use crate::game::Keybindings;
+use crate::weapon::WeaponType;
+
+pub const PLAYER_RADIUS: f32 = 16.0;
+pub const PLAYER_MASS: f32 = 500.0;
+
+const THRUST: f32 = 300.0;
+const DRAG: f32 = 1.8;
+const ROTATE_SPEED: f32 = 3.0;
+const MAX_SPEED: f32 = 420.0;
+
+pub struct Player {
+    pub pos: Vec2,
+    pub vel: Vec2,
+    pub hp: f32,
+    pub invincibility: f32,
+    angle: f32,
+}
+
+impl Player {
+    pub fn new() -> Self {
+        Self {
+            pos: Vec2::new(screen_width() / 2.0, screen_height() / 2.0),
+            vel: Vec2::ZERO,
+            hp: 100.0,
+            invincibility: 0.0,
+            angle: -std::f32::consts::FRAC_PI_2,
+        }
+    }
+
+    pub fn update(&mut self, dt: f32, keys: &Keybindings) {
+        if is_key_down(keys.rotate_left) { self.angle -= ROTATE_SPEED * dt; }
+        if is_key_down(keys.rotate_right) { self.angle += ROTATE_SPEED * dt; }
+
+        if is_key_down(keys.thrust) {
+            self.vel += Vec2::from_angle(self.angle) * THRUST * dt;
+        }
+
+        self.vel *= 1.0 - DRAG * dt;
+        if self.vel.length() > MAX_SPEED {
+            self.vel = self.vel.normalize() * MAX_SPEED;
+        }
+
+        self.pos += self.vel * dt;
+
+        let (sw, sh) = (screen_width(), screen_height());
+        if self.pos.x < 0.0 { self.pos.x += sw; }
+        if self.pos.x > sw  { self.pos.x -= sw; }
+        if self.pos.y < 0.0 { self.pos.y += sh; }
+        if self.pos.y > sh  { self.pos.y -= sh; }
+
+        if self.invincibility > 0.0 {
+            self.invincibility -= dt;
+        }
+    }
+
+    pub fn aabb(&self) -> Aabb {
+        Aabb::from_center_radius(self.pos, PLAYER_RADIUS)
+    }
+
+    pub fn spawn_bullets(&self, weapon: WeaponType) -> Vec<Bullet> {
+        let forward = Vec2::from_angle(self.angle);
+        let tip = self.pos + forward * 22.0;
+        match weapon {
+            WeaponType::Blaster => {
+                vec![Bullet::new(tip, self.angle)]
+            }
+            WeaponType::Spread => {
+                let spread = 0.15;
+                vec![
+                    Bullet::new_with(tip, self.angle - spread, 550.0, false, 2.5, ORANGE),
+                    Bullet::new_with(tip, self.angle, 600.0, false, 2.5, ORANGE),
+                    Bullet::new_with(tip, self.angle + spread, 550.0, false, 2.5, ORANGE),
+                ]
+            }
+            WeaponType::Rapid => {
+                vec![Bullet::new_with(tip, self.angle, 700.0, false, 1.5, SKYBLUE)]
+            }
+            WeaponType::Laser => {
+                vec![Bullet::new_with(tip, self.angle, 900.0, true, 1.5, LIME)]
+            }
+        }
+    }
+
+    pub fn spawn_bomb(&self) -> Bomb {
+        let forward = Vec2::from_angle(self.angle);
+        Bomb::new(self.pos + forward * 22.0, self.angle)
+    }
+
+    pub fn draw(&self) {
+        if self.invincibility > 0.0 && (self.invincibility * 8.0) as u32 % 2 == 0 {
+            return;
+        }
+        let forward = Vec2::from_angle(self.angle);
+        let side = Vec2::new(-forward.y, forward.x);
+        draw_triangle(
+            self.pos + forward * 20.0,
+            self.pos - forward * 10.0 + side * 12.0,
+            self.pos - forward * 10.0 - side * 12.0,
+            WHITE,
+        );
+    }
+}
+```
+
+`collision.rs`, `asteroid.rs`, `sound.rs`, `particle.rs`, and `grid.rs` are unchanged from the previous tutorial.
+
+**`src/game.rs`**
+
+```rust
+use macroquad::prelude::*;
+use crate::player::{Player, PLAYER_RADIUS, PLAYER_MASS};
+use crate::asteroid::{self, Asteroid};
+use crate::bullet::Bullet;
+use crate::bomb::{Bomb, EXPLOSION_RADIUS};
+use crate::collision;
+use crate::sound::Sounds;
+use crate::particle::Particles;
+use crate::grid::Grid;
+use crate::weapon::WeaponType;
+
+#[derive(Clone, Copy, PartialEq)]
+pub enum Action {
+    Thrust,
+    RotateLeft,
+    RotateRight,
+    Shoot,
+}
+
+impl Action {
+    pub const ALL: [Action; 4] = [
+        Action::Thrust,
+        Action::RotateLeft,
+        Action::RotateRight,
+        Action::Shoot,
+    ];
+
+    pub fn label(&self) -> &'static str {
+        match self {
+            Action::Thrust => "Thrust",
+            Action::RotateLeft => "Rotate Left",
+            Action::RotateRight => "Rotate Right",
+            Action::Shoot => "Shoot",
+        }
+    }
+}
+
+pub struct Keybindings {
+    pub thrust: KeyCode,
+    pub rotate_left: KeyCode,
+    pub rotate_right: KeyCode,
+    pub shoot: KeyCode,
+}
+
+impl Keybindings {
+    pub fn default_bindings() -> Self {
+        Self {
+            thrust: KeyCode::W,
+            rotate_left: KeyCode::A,
+            rotate_right: KeyCode::D,
+            shoot: KeyCode::Space,
+        }
+    }
+
+    pub fn key_for(&self, action: Action) -> KeyCode {
+        match action {
+            Action::Thrust => self.thrust,
+            Action::RotateLeft => self.rotate_left,
+            Action::RotateRight => self.rotate_right,
+            Action::Shoot => self.shoot,
+        }
+    }
+
+    pub fn set_key(&mut self, action: Action, key: KeyCode) {
+        match action {
+            Action::Thrust => self.thrust = key,
+            Action::RotateLeft => self.rotate_left = key,
+            Action::RotateRight => self.rotate_right = key,
+            Action::Shoot => self.shoot = key,
+        }
+    }
+}
+
+#[derive(PartialEq)]
+enum GameState {
+    Menu,
+    Playing,
+    GameOver,
+    Settings,
+    AwaitingKey(Action),
+}
+
+pub struct Game {
+    player: Player,
+    asteroids: Vec<Asteroid>,
+    bullets: Vec<Bullet>,
+    bombs: Vec<Bomb>,
+    score: f32,
+    spawn_timer: f32,
+    spawn_interval: f32,
+    shoot_cooldown: f32,
+    state: GameState,
+    sounds: Sounds,
+    particles: Particles,
+    grid: Grid,
+    keybindings: Keybindings,
+    high_score: u32,
+    current_weapon: WeaponType,
+    bomb_count: u32,
+}
+
+impl Game {
+    pub fn new(sounds: Sounds) -> Self {
+        Self {
+            player: Player::new(),
+            asteroids: Vec::new(),
+            bullets: Vec::new(),
+            bombs: Vec::new(),
+            score: 0.0,
+            spawn_timer: 0.0,
+            spawn_interval: 3.0,
+            shoot_cooldown: 0.0,
+            state: GameState::Menu,
+            sounds,
+            particles: Particles::new(),
+            grid: Grid::new(screen_width(), screen_height(), 120.0),
+            keybindings: Keybindings::default_bindings(),
+            high_score: 0,
+            current_weapon: WeaponType::Blaster,
+            bomb_count: 3,
+        }
+    }
+
+    pub fn reset(&mut self) {
+        self.player = Player::new();
+        self.asteroids.clear();
+        self.bullets.clear();
+        self.bombs.clear();
+        self.score = 0.0;
+        self.spawn_timer = 0.0;
+        self.spawn_interval = 3.0;
+        self.shoot_cooldown = 0.0;
+        self.state = GameState::Playing;
+        self.particles = Particles::new();
+        self.grid = Grid::new(screen_width(), screen_height(), 120.0);
+        self.current_weapon = WeaponType::Blaster;
+        self.bomb_count = 3;
+    }
+
+    pub fn update(&mut self, dt: f32) {
+        match &self.state {
+            GameState::Menu => {
+                if is_key_pressed(KeyCode::Enter) {
+                    self.reset();
+                    self.state = GameState::Playing;
+                }
+                if is_key_pressed(KeyCode::S) {
+                    self.state = GameState::Settings;
+                }
+                if is_key_pressed(KeyCode::Escape) {
+                    std::process::exit(0);
+                }
+                return;
+            }
+            GameState::GameOver => {
+                let final_score = self.score as u32;
+                if final_score > self.high_score {
+                    self.high_score = final_score;
+                }
+                if is_key_pressed(KeyCode::R) {
+                    self.reset();
+                }
+                if is_key_pressed(KeyCode::Escape) {
+                    self.state = GameState::Menu;
+                }
+                return;
+            }
+            GameState::Settings | GameState::AwaitingKey(_) => {
+                self.update_settings();
+                return;
+            }
+            GameState::Playing => {}
+        }
+
+        self.player.update(dt, &self.keybindings);
+        self.score += dt;
+
+        if is_key_down(self.keybindings.thrust) {
+            self.sounds.play(&self.sounds.thrust.clone());
+        }
+
+        // Weapon switching
+        if is_key_pressed(KeyCode::Key1) { self.current_weapon = WeaponType::Blaster; }
+        if is_key_pressed(KeyCode::Key2) { self.current_weapon = WeaponType::Spread; }
+        if is_key_pressed(KeyCode::Key3) { self.current_weapon = WeaponType::Rapid; }
+        if is_key_pressed(KeyCode::Key4) { self.current_weapon = WeaponType::Laser; }
+
+        self.shoot_cooldown -= dt;
+        if is_key_down(self.keybindings.shoot) && self.shoot_cooldown <= 0.0 {
+            let new_bullets = self.player.spawn_bullets(self.current_weapon);
+            self.bullets.extend(new_bullets);
+            self.shoot_cooldown = self.current_weapon.cooldown();
+            self.sounds.play(&self.sounds.shoot.clone());
+        }
+
+        // Bomb deployment
+        if is_key_pressed(KeyCode::B) && self.bomb_count > 0 {
+            self.bombs.push(self.player.spawn_bomb());
+            self.bomb_count -= 1;
+            self.sounds.play(&self.sounds.shoot.clone());
+        }
+
+        self.spawn_timer += dt;
+        if self.spawn_timer >= self.spawn_interval {
+            self.spawn_timer = 0.0;
+            self.asteroids.push(Asteroid::spawn());
+            self.spawn_interval = (self.spawn_interval - 0.15).max(0.6);
+        }
+
+        for asteroid in &mut self.asteroids {
+            asteroid.update(dt);
+        }
+
+        self.grid.clear();
+        for (i, asteroid) in self.asteroids.iter().enumerate() {
+            self.grid.insert(i, asteroid.pos.x, asteroid.pos.y, asteroid.radius);
+        }
+        let pairs = self.grid.potential_pairs();
+        asteroid::resolve_collisions(&mut self.asteroids, &pairs);
+
+        self.update_bullets();
+        self.update_bombs();
+        self.particles.update(dt);
+
+        self.asteroids.retain(|a| !a.is_off_screen());
+        self.update_collisions();
+
+        let current_score = self.score as u32;
+        if current_score > self.high_score {
+            self.high_score = current_score;
+        }
+    }
+
+    fn update_bullets(&mut self) {
+        for bullet in &mut self.bullets {
+            bullet.update(get_frame_time());
+        }
+        self.bullets.retain(|b| !b.is_off_screen());
+
+        let mut asteroids_hit: Vec<usize> = Vec::new();
+        self.bullets.retain(|bullet| {
+            for (i, asteroid) in self.asteroids.iter().enumerate() {
+                if collision::point_in_polygon(bullet.pos, asteroid.pos, &asteroid.vertices) {
+                    if !asteroids_hit.contains(&i) {
+                        asteroids_hit.push(i);
+                    }
+                    if !bullet.piercing { return false; }
+                }
+            }
+            true
+        });
+
+        let mut fragments: Vec<Asteroid> = Vec::new();
+        let mut hit_positions: Vec<(Vec2, f32)> = Vec::new();
+        for &i in &asteroids_hit {
+            let asteroid = &self.asteroids[i];
+            hit_positions.push((asteroid.pos, asteroid.radius));
+            if asteroid.generation == 0 {
+                let spread = Vec2::from_angle(rand::gen_range(0.0f32, std::f32::consts::TAU));
+                fragments.push(Asteroid::spawn_fragment(
+                    asteroid.pos, asteroid.vel, asteroid.radius, spread,
+                ));
+                fragments.push(Asteroid::spawn_fragment(
+                    asteroid.pos, asteroid.vel, asteroid.radius, -spread,
+                ));
+            }
+        }
+
+        asteroids_hit.sort_unstable();
+        for i in asteroids_hit.into_iter().rev() {
+            self.asteroids.swap_remove(i);
+        }
+        self.asteroids.extend(fragments);
+
+        for &(pos, radius) in &hit_positions {
+            let count = (radius * 0.8) as usize;
+            self.particles.burst(pos, count, radius * 2.0, LIGHTGRAY);
+        }
+        if !hit_positions.is_empty() {
+            self.sounds.play(&self.sounds.explode.clone());
+        }
+    }
+
+    fn update_bombs(&mut self) {
+        for bomb in &mut self.bombs {
+            bomb.update(get_frame_time());
+        }
+
+        for bomb in &mut self.bombs {
+            if bomb.exploded { continue; }
+            for asteroid in &self.asteroids {
+                if bomb.pos.distance(asteroid.pos) < asteroid.radius {
+                    bomb.exploded = true;
+                    bomb.timer = 0.0;
+                    break;
+                }
+            }
+        }
+
+        let mut exploded_positions: Vec<Vec2> = Vec::new();
+        for bomb in &self.bombs {
+            if bomb.exploded {
+                exploded_positions.push(bomb.pos);
+            }
+        }
+
+        for pos in &exploded_positions {
+            let mut hit_indices: Vec<usize> = Vec::new();
+            let mut fragments: Vec<Asteroid> = Vec::new();
+            for (i, asteroid) in self.asteroids.iter().enumerate() {
+                if pos.distance(asteroid.pos) < EXPLOSION_RADIUS {
+                    hit_indices.push(i);
+                    if asteroid.generation == 0 {
+                        let spread = Vec2::from_angle(rand::gen_range(0.0f32, std::f32::consts::TAU));
+                        fragments.push(Asteroid::spawn_fragment(
+                            asteroid.pos, asteroid.vel, asteroid.radius, spread,
+                        ));
+                        fragments.push(Asteroid::spawn_fragment(
+                            asteroid.pos, asteroid.vel, asteroid.radius, -spread,
+                        ));
+                    }
+                    self.particles.burst(asteroid.pos, (asteroid.radius * 0.6) as usize, asteroid.radius * 1.5, LIGHTGRAY);
+                }
+            }
+            hit_indices.sort_unstable();
+            for i in hit_indices.into_iter().rev() {
+                self.asteroids.swap_remove(i);
+            }
+            self.asteroids.extend(fragments);
+            self.particles.burst(*pos, 40, 200.0, RED);
+            self.particles.burst(*pos, 25, 150.0, ORANGE);
+            self.sounds.play(&self.sounds.explode.clone());
+        }
+
+        self.bombs.retain(|b| !b.exploded && !b.is_off_screen());
+    }
+
+    fn update_collisions(&mut self) {
+        let player_aabb = self.player.aabb();
+        let mut player_pos = self.player.pos;
+        let mut player_vel = self.player.vel;
+        let player_invincible = self.player.invincibility > 0.0;
+        let mut took_damage = false;
+
+        for asteroid in &mut self.asteroids {
+            if !player_aabb.overlaps(&asteroid.aabb()) { continue; }
+            if !collision::circle_hits_polygon(
+                player_pos, PLAYER_RADIUS, asteroid.pos, &asteroid.vertices,
+            ) { continue; }
+
+            let normal = (asteroid.pos - player_pos).normalize_or_zero();
+            let vel_along = (player_vel - asteroid.vel).dot(normal);
+
+            if vel_along > 0.0 {
+                let ma = asteroid.mass();
+                let j = 2.0 * vel_along / (1.0 / PLAYER_MASS + 1.0 / ma);
+                player_vel   -= normal * (j / PLAYER_MASS);
+                asteroid.vel += normal * (j / ma);
+
+                let overlap = PLAYER_RADIUS + asteroid.radius
+                    - player_pos.distance(asteroid.pos);
+                if overlap > 0.0 {
+                    let correction = normal * overlap * 0.5;
+                    player_pos   -= correction;
+                    asteroid.pos += correction;
+                }
+            }
+
+            if !player_invincible {
+                took_damage = true;
+            }
+        }
+
+        self.player.pos = player_pos;
+        self.player.vel = player_vel;
+
+        if took_damage {
+            self.player.hp -= 20.0;
+            self.player.invincibility = 1.5;
+            self.particles.burst(self.player.pos, 12, 80.0, ORANGE);
+            self.sounds.play(&self.sounds.damage.clone());
+            if self.player.hp <= 0.0 {
+                self.state = GameState::GameOver;
+            }
+        }
+    }
+
+    fn update_settings(&mut self) {
+        if is_key_pressed(KeyCode::Escape) {
+            self.state = GameState::Menu;
+            return;
+        }
+
+        if let GameState::AwaitingKey(action) = self.state {
+            if let Some(key) = get_last_key_pressed() {
+                if key != KeyCode::Escape {
+                    self.keybindings.set_key(action, key);
+                }
+                self.state = GameState::Settings;
+            }
+            return;
+        }
+
+        if is_key_pressed(KeyCode::Left) {
+            self.sounds.volume = (self.sounds.volume - 0.1).max(0.0);
+        }
+        if is_key_pressed(KeyCode::Right) {
+            self.sounds.volume = (self.sounds.volume + 0.1).min(1.0);
+        }
+
+        let action_keys = [KeyCode::Key1, KeyCode::Key2, KeyCode::Key3, KeyCode::Key4];
+        for (i, &key) in action_keys.iter().enumerate() {
+            if is_key_pressed(key) {
+                self.state = GameState::AwaitingKey(Action::ALL[i]);
+            }
+        }
+    }
+
+    fn draw_menu(&self) {
+        let cx = screen_width() / 2.0;
+        let cy = screen_height() / 2.0;
+        draw_text("ASTEROID DODGER", cx - 220.0, cy - 80.0, 52.0, WHITE);
+        draw_text("[Enter] Play", cx - 70.0, cy, 28.0, GREEN);
+        draw_text("[S] Settings", cx - 70.0, cy + 40.0, 28.0, LIGHTGRAY);
+        draw_text("[Esc] Exit", cx - 60.0, cy + 80.0, 28.0, GRAY);
+        if self.high_score > 0 {
+            draw_text(
+                &format!("High Score: {}", self.high_score),
+                cx - 90.0, cy + 140.0, 24.0, YELLOW,
+            );
+        }
+    }
+
+    fn draw_game_over(&self) {
+        let cx = screen_width() / 2.0;
+        let cy = screen_height() / 2.0;
+        let final_score = self.score as u32;
+        let msg = format!("Game Over — Score: {}", final_score);
+        draw_text(&msg, cx - 180.0, cy, 40.0, WHITE);
+        if final_score >= self.high_score {
+            draw_text("NEW HIGH SCORE!", cx - 110.0, cy + 40.0, 28.0, YELLOW);
+        }
+        draw_text("[R] Restart   [Esc] Menu", cx - 150.0, cy + 80.0, 24.0, GRAY);
+    }
+
+    fn draw_settings(&self) {
+        let cx = screen_width() / 2.0;
+        let mut y = 100.0;
+
+        draw_text("SETTINGS", cx - 80.0, y, 40.0, WHITE);
+        y += 60.0;
+
+        draw_text("Volume", cx - 180.0, y, 24.0, LIGHTGRAY);
+        let bar_x = cx - 20.0;
+        let bar_w = 200.0;
+        draw_rectangle(bar_x, y - 14.0, bar_w, 16.0, DARKGRAY);
+        draw_rectangle(bar_x, y - 14.0, bar_w * self.sounds.volume, 16.0, GREEN);
+        draw_rectangle_lines(bar_x, y - 14.0, bar_w, 16.0, 1.0, WHITE);
+        draw_text("[<-/->]", cx + 200.0, y, 18.0, GRAY);
+        y += 50.0;
+
+        draw_text("Keybindings", cx - 180.0, y, 24.0, WHITE);
+        y += 30.0;
+
+        for (i, action) in Action::ALL.iter().enumerate() {
+            let key = self.keybindings.key_for(*action);
+            let key_name = format!("{:?}", key);
+            let label = format!("[{}] {} — {}", i + 1, action.label(), key_name);
+
+            let color = if self.state == GameState::AwaitingKey(*action) {
+                YELLOW
+            } else {
+                LIGHTGRAY
+            };
+
+            draw_text(&label, cx - 180.0, y, 20.0, color);
+
+            if self.state == GameState::AwaitingKey(*action) {
+                draw_text("press any key...", cx + 120.0, y, 18.0, YELLOW);
+            }
+
+            y += 30.0;
+        }
+
+        y += 20.0;
+        draw_text("[Esc] Back", cx - 180.0, y, 20.0, GRAY);
+    }
+
+    pub fn draw(&self) {
+        clear_background(BLACK);
+        match &self.state {
+            GameState::Menu => { self.draw_menu(); return; }
+            GameState::Settings | GameState::AwaitingKey(_) => {
+                self.draw_settings();
+                return;
+            }
+            _ => {}
+        }
+
+        self.particles.draw();
+
+        for asteroid in &self.asteroids {
+            asteroid.draw();
+        }
+        for bullet in &self.bullets {
+            bullet.draw();
+        }
+        for bomb in &self.bombs {
+            bomb.draw();
+        }
+        self.player.draw();
+
+        draw_text(
+            &format!("FPS: {}", get_fps()),
+            screen_width() - 90.0, 24.0, 20.0, DARKGREEN,
+        );
+        draw_text(&format!("Score: {}", self.score as u32), 20.0, 24.0, 24.0, WHITE);
+        draw_text(
+            &format!("Best: {}", self.high_score),
+            screen_width() - 120.0, 48.0, 20.0, GRAY,
+        );
+
+        draw_rectangle(20.0, 36.0, 200.0, 16.0, DARKGRAY);
+        let fill_width = 200.0 * (self.player.hp / 100.0).clamp(0.0, 1.0);
+        let bar_color = if self.player.hp > 60.0 { GREEN }
+                        else if self.player.hp > 30.0 { YELLOW }
+                        else { RED };
+        draw_rectangle(20.0, 36.0, fill_width, 16.0, bar_color);
+        draw_rectangle_lines(20.0, 36.0, 200.0, 16.0, 1.5, WHITE);
+
+        draw_text(
+            &format!("[{}] {}",
+                WeaponType::ALL.iter().position(|w| *w == self.current_weapon).unwrap() + 1,
+                self.current_weapon.label()
+            ),
+            20.0, 70.0, 20.0, self.current_weapon.color(),
+        );
+
+        draw_text(
+            &format!("Bombs: {}", self.bomb_count),
+            20.0, 88.0, 20.0, RED,
+        );
+
+        if self.state == GameState::GameOver {
+            self.draw_game_over();
+        }
+    }
+}
+```
+
+## Next steps
+
+- **[Add Power-ups and a Shop](/tutorials/rust-macroquad-powerups-shop)** — weapon upgrades, bomb refills, shields, and a between-rounds shop
+- **[Add a Large Map and Minimap](/tutorials/rust-macroquad-large-map)** — camera system, world-space rendering, radar display
