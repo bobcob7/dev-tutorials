@@ -29,6 +29,11 @@ const continueData = allSeries.map((s) => ({
   title: s.data.title,
   tutorialSlugs: seriesTutorialSlugs(s.id),
 }));
+
+const standaloneData = standaloneTutorials.map((t) => ({
+  slug: t.id,
+  title: t.data.title,
+}));
 ---
 
 <BaseLayout title="Dev Tutorials">
@@ -39,7 +44,7 @@ const continueData = allSeries.map((s) => ({
   </div>
 
   <div class="page" style="padding-top: 0">
-    <ContinueReading allSeries={continueData} />
+    <ContinueReading allSeries={continueData} standaloneTutorials={standaloneData} />
 
     {allSeries.length > 0 && (
       <div>

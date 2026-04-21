@@ -5,13 +5,25 @@ interface Series {
   tutorialSlugs: string[];
 }
 
+interface Standalone {
+  slug: string;
+  title: string;
+}
+
 interface Props {
   allSeries: Series[];
+  standaloneTutorials: Standalone[];
 }
-const { allSeries } = Astro.props;
+const { allSeries, standaloneTutorials } = Astro.props;
 ---
 
-<div class="continue-wrap" id="continue-wrap" data-series={JSON.stringify(allSeries)} style="display:none">
+<div
+  class="continue-wrap"
+  id="continue-wrap"
+  data-series={JSON.stringify(allSeries)}
+  data-standalone={JSON.stringify(standaloneTutorials)}
+  style="display:none"
+>
   <p class="section-label">Continue reading</p>
   <div id="continue-cards" class="card-grid"></div>
 </div>
@@ -22,46 +34,87 @@ const { allSeries } = Astro.props;
     if (!wrap) return;
 
     const allSeries: { slug: string; title: string; tutorialSlugs: string[] }[] = JSON.parse(wrap.dataset.series!);
+    const standalone: { slug: string; title: string }[] = JSON.parse(wrap.dataset.standalone!);
     const cardsEl = document.getElementById("continue-cards")!;
     let hasCards = false;
 
+    function hasProgress(slug: string): boolean {
+      if (localStorage.getItem(`tutorial-complete:${slug}`)) return true;
+      try {
+        const raw = localStorage.getItem(`tutorial-progress:${slug}`);
+        if (raw) {
+          const steps = JSON.parse(raw);
+          return Object.values(steps).some((v) => v === true);
+        }
+      } catch {}
+      return false;
+    }
+
+    function stepProgress(slug: string): { done: number; total: number } {
+      try {
+        const raw = localStorage.getItem(`tutorial-progress:${slug}`);
+        if (raw) {
+          const steps = JSON.parse(raw);
+          const entries = Object.values(steps);
+          return { done: entries.filter((v) => v === true).length, total: entries.length };
+        }
+      } catch {}
+      return { done: 0, total: 0 };
+    }
+
+    // Series cards
     allSeries.forEach((series) => {
-      // Check if any steps have actually been started
-      let hasAnyProgress = false;
+      let seriesHasProgress = false;
       let completed = 0;
       series.tutorialSlugs.forEach((slug) => {
         if (localStorage.getItem(`tutorial-complete:${slug}`)) {
           completed++;
-          hasAnyProgress = true;
+          seriesHasProgress = true;
         }
-        try {
-          const raw = localStorage.getItem(`tutorial-progress:${slug}`);
-          if (raw) {
-            const steps = JSON.parse(raw);
-            if (Object.values(steps).some((v) => v === true)) {
-              hasAnyProgress = true;
-            }
-          }
-        } catch {}
+        if (hasProgress(slug)) seriesHasProgress = true;
       });
 
-      if (!hasAnyProgress) return; // never started
+      if (!seriesHasProgress) return;
 
       const total = series.tutorialSlugs.length;
-      if (completed >= total) return; // all done
+      if (completed >= total) return;
 
       const lastVisited = localStorage.getItem(`series-last:${series.slug}`);
       if (!lastVisited) return;
 
       const pct = Math.round((completed / total) * 100);
-
       const bookmark = localStorage.getItem(`tutorial-bookmark:${lastVisited}`) ?? "";
+
       const card = document.createElement("a");
       card.href = `/tutorials/${lastVisited}${bookmark ? "#" + bookmark : ""}`;
       card.className = "tutorial-card continue-card";
       card.innerHTML = `
         <span class="card-title">${series.title}</span>
         <span class="card-desc">${completed} of ${total} tutorials complete</span>
+        <div class="progress-bar" style="margin-top:8px">
+          <div class="progress-fill" style="width:${pct}%"></div>
+        </div>
+        <span class="card-desc" style="margin-top:6px;font-size:12px;color:var(--accent-hover)">Continue →</span>
+      `;
+      cardsEl.appendChild(card);
+      hasCards = true;
+    });
+
+    // Standalone tutorial cards
+    standalone.forEach((tut) => {
+      if (!hasProgress(tut.slug)) return;
+      if (localStorage.getItem(`tutorial-complete:${tut.slug}`)) return; // finished
+
+      const { done, total } = stepProgress(tut.slug);
+      const pct = total > 0 ? Math.round((done / total) * 100) : 0;
+      const bookmark = localStorage.getItem(`tutorial-bookmark:${tut.slug}`) ?? "";
+
+      const card = document.createElement("a");
+      card.href = `/tutorials/${tut.slug}${bookmark ? "#" + bookmark : ""}`;
+      card.className = "tutorial-card continue-card";
+      card.innerHTML = `
+        <span class="card-title">${tut.title}</span>
+        <span class="card-desc">${done} of ${total} steps complete</span>
         <div class="progress-bar" style="margin-top:8px">
           <div class="progress-fill" style="width:${pct}%"></div>
         </div>
