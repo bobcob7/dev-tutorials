@@ -34,11 +34,19 @@ const { tutorialSlug, seriesSlug } = Astro.props;
       localStorage.setItem(storageKey, JSON.stringify(data));
     }
 
-    // Find all step headings (h3 inside tutorial-content)
+    // Find step headings. Series tutorials use h3 for steps; standalone
+    // tutorials use h2 (e.g. "## Step 1 — ..."). Use h3 if any exist,
+    // otherwise fall back to h2 headings that look like steps.
     const content = document.querySelector(".tutorial-content");
     if (!content) return;
 
-    const stepHeadings = Array.from(content.querySelectorAll("h3[id]")) as HTMLElement[];
+    let stepHeadings = Array.from(content.querySelectorAll("h3[id]")) as HTMLElement[];
+    if (stepHeadings.length === 0) {
+      stepHeadings = Array.from(content.querySelectorAll("h2[id]")).filter((h) => {
+        const text = h.textContent ?? "";
+        return /^(Step |Milestone )/i.test(text.trim());
+      }) as HTMLElement[];
+    }
     if (stepHeadings.length === 0) return;
 
     const progress = loadProgress();
@@ -70,13 +78,15 @@ const { tutorialSlug, seriesSlug } = Astro.props;
       heading.insertBefore(btn, heading.firstChild);
     });
 
-    // Add milestone markers to h2 headings
-    const milestoneHeadings = Array.from(
-      content.querySelectorAll("h2[id]")
-    ).filter((h) => {
-      const text = h.textContent ?? "";
-      return text.includes("Milestone") || text.includes("Step ");
-    }) as HTMLElement[];
+    // Add milestone markers to h2 headings (only when steps are h3,
+    // i.e. milestones are parents of steps, not the steps themselves)
+    const stepsAreH3 = content.querySelectorAll("h3[id]").length > 0;
+    const milestoneHeadings: HTMLElement[] = stepsAreH3
+      ? (Array.from(content.querySelectorAll("h2[id]")).filter((h) => {
+          const text = h.textContent ?? "";
+          return text.includes("Milestone") || text.includes("Step ");
+        }) as HTMLElement[])
+      : [];
 
     milestoneHeadings.forEach((heading) => {
       const indicator = document.createElement("span");
