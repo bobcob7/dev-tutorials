@@ -118,6 +118,9 @@ const { tutorialSlug, seriesSlug } = Astro.props;
       if (fill) fill.style.width = `${pct}%`;
       if (text) text.textContent = `${done} / ${total} steps`;
 
+      // Store total step count so other pages can read it
+      localStorage.setItem(`tutorial-steps:${slug}`, total.toString());
+
       // Store completion timestamp if all done
       if (done === total && total > 0) {
         localStorage.setItem(`tutorial-complete:${slug}`, Date.now().toString());

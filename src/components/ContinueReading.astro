@@ -51,15 +51,16 @@ const { allSeries, standaloneTutorials } = Astro.props;
     }
 
     function stepProgress(slug: string): { done: number; total: number } {
+      const total = parseInt(localStorage.getItem(`tutorial-steps:${slug}`) ?? "0", 10);
+      let done = 0;
       try {
         const raw = localStorage.getItem(`tutorial-progress:${slug}`);
         if (raw) {
           const steps = JSON.parse(raw);
-          const entries = Object.values(steps);
-          return { done: entries.filter((v) => v === true).length, total: entries.length };
+          done = Object.values(steps).filter((v) => v === true).length;
         }
       } catch {}
-      return { done: 0, total: 0 };
+      return { done, total };
     }
 
     // Series cards
