@@ -1,5 +1,6 @@
 ---
 import BaseLayout from "./BaseLayout.astro";
+import ProgressBar from "../components/ProgressBar.astro";
 
 interface SeriesNav {
   seriesTitle: string;
@@ -18,9 +19,10 @@ interface Props {
   repo?: string;
   headings: { depth: number; slug: string; text: string }[];
   seriesNav?: SeriesNav;
+  tutorialSlug?: string;
 }
 
-const { title, description, difficulty, topics, repo, headings, seriesNav } = Astro.props;
+const { title, description, difficulty, topics, repo, headings, seriesNav, tutorialSlug } = Astro.props;
 
 const toc = headings.filter((h) => h.depth === 2 || h.depth === 3);
 ---
@@ -42,6 +44,11 @@ const toc = headings.filter((h) => h.depth === 2 || h.depth === 3);
         {topics.map((t) => <span class="topic-tag">{t}</span>)}
         {repo && <a href={repo} target="_blank" style="font-size:12px; margin-left:auto;">View repo →</a>}
       </div>
+
+      {tutorialSlug && (
+        <ProgressBar tutorialSlug={tutorialSlug} seriesSlug={seriesNav?.seriesSlug} />
+      )}
+
       <slot />
 
       {seriesNav && (

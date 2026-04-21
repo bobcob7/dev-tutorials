@@ -646,6 +646,130 @@ pre code { background: none; padding: 0; font-size: inherit; color: var(--text);
   letter-spacing: 0.05em;
 }
 
+/* Progress tracking */
+.progress-wrap {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.progress-bar {
+  flex: 1;
+  height: 6px;
+  background: var(--surface2);
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+.series-bar { height: 8px; }
+
+.progress-fill {
+  height: 100%;
+  background: var(--accent);
+  border-radius: 3px;
+  transition: width 0.3s ease;
+  width: 0;
+}
+
+.progress-text {
+  font-size: 12px;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.step-check {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border: 2px solid var(--border);
+  border-radius: 4px;
+  background: transparent;
+  cursor: pointer;
+  margin-right: 8px;
+  padding: 0;
+  flex-shrink: 0;
+  transition: border-color 0.15s, background 0.15s;
+  vertical-align: middle;
+  position: relative;
+  top: -1px;
+}
+
+.step-check:hover {
+  border-color: var(--accent);
+}
+
+.step-check.checked {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+.step-check.checked::after {
+  content: "✓";
+  color: white;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.milestone-indicator {
+  font-size: 14px;
+  margin-left: 8px;
+}
+
+.milestone-indicator.complete {
+  color: var(--green);
+}
+
+.series-progress-wrap {
+  margin-bottom: 24px;
+}
+
+.series-progress-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.continue-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 16px;
+  background: var(--accent);
+  color: white;
+  border-radius: 6px;
+  font-size: 14px;
+  font-weight: 600;
+  text-decoration: none;
+  transition: background 0.15s;
+}
+
+.continue-btn:hover {
+  background: var(--accent-hover);
+  text-decoration: none;
+}
+
+.series-item-done {
+  opacity: 0.6;
+}
+
+.series-item-done .series-item-title::after {
+  content: " ✓";
+  color: var(--green);
+  font-size: 12px;
+}
+
+.continue-wrap {
+  margin-bottom: 32px;
+}
+
+.continue-card {
+  border-left: 3px solid var(--accent);
+}
+
 /* Breadcrumbs */
 .breadcrumb {
   display: flex;

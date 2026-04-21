@@ -1,0 +1,61 @@
+---
+interface Series {
+  slug: string;
+  title: string;
+  tutorialSlugs: string[];
+}
+
+interface Props {
+  allSeries: Series[];
+}
+const { allSeries } = Astro.props;
+---
+
+<div class="continue-wrap" id="continue-wrap" data-series={JSON.stringify(allSeries)} style="display:none">
+  <p class="section-label">Continue reading</p>
+  <div id="continue-cards" class="card-grid"></div>
+</div>
+
+<script>
+  document.addEventListener("DOMContentLoaded", () => {
+    const wrap = document.getElementById("continue-wrap") as HTMLElement;
+    if (!wrap) return;
+
+    const allSeries: { slug: string; title: string; tutorialSlugs: string[] }[] = JSON.parse(wrap.dataset.series!);
+    const cardsEl = document.getElementById("continue-cards")!;
+    let hasCards = false;
+
+    allSeries.forEach((series) => {
+      const lastVisited = localStorage.getItem(`series-last:${series.slug}`);
+      if (!lastVisited) return;
+
+      // Count progress
+      let completed = 0;
+      series.tutorialSlugs.forEach((slug) => {
+        if (localStorage.getItem(`tutorial-complete:${slug}`)) completed++;
+      });
+      const total = series.tutorialSlugs.length;
+      if (completed >= total) return; // all done
+
+      const pct = Math.round((completed / total) * 100);
+
+      const card = document.createElement("a");
+      card.href = `/tutorials/${lastVisited}`;
+      card.className = "tutorial-card continue-card";
+      card.innerHTML = `
+        <span class="card-title">${series.title}</span>
+        <span class="card-desc">${completed} of ${total} tutorials complete</span>
+        <div class="progress-bar" style="margin-top:8px">
+          <div class="progress-fill" style="width:${pct}%"></div>
+        </div>
+        <span class="card-desc" style="margin-top:6px;font-size:12px;color:var(--accent-hover)">Continue →</span>
+      `;
+      cardsEl.appendChild(card);
+      hasCards = true;
+    });
+
+    if (hasCards) {
+      wrap.style.display = "block";
+    }
+  });
+</script>

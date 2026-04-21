@@ -1,6 +1,7 @@
 ---
 import { getCollection, render } from "astro:content";
 import BaseLayout from "../../layouts/BaseLayout.astro";
+import SeriesProgress from "../../components/SeriesProgress.astro";
 
 export async function getStaticPaths() {
   const allSeries = await getCollection("series");
@@ -41,6 +42,11 @@ function tutorialType(t: typeof seriesTutorials[0]): string {
         {entry.data.topics.map((t) => <span class="topic-tag">{t}</span>)}
       </div>
     </div>
+
+    <SeriesProgress
+      seriesSlug={entry.id}
+      tutorials={seriesTutorials.map((t) => ({ slug: t.id, title: t.data.title }))}
+    />
 
     <Content />
 

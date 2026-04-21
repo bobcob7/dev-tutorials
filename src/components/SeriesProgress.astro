@@ -1,0 +1,69 @@
+---
+interface Tutorial {
+  slug: string;
+  title: string;
+}
+
+interface Props {
+  seriesSlug: string;
+  tutorials: Tutorial[];
+}
+const { seriesSlug, tutorials } = Astro.props;
+---
+
+<div class="series-progress-wrap" data-series={seriesSlug} data-tutorials={JSON.stringify(tutorials.map(t => t.slug))}>
+  <div class="series-progress-header">
+    <div class="progress-bar series-bar">
+      <div class="progress-fill" id="series-progress-fill"></div>
+    </div>
+    <span class="progress-text" id="series-progress-text"></span>
+  </div>
+  <a href="#" class="continue-btn" id="series-continue-btn" style="display:none">
+    Continue where you left off →
+  </a>
+</div>
+
+<script>
+  document.addEventListener("DOMContentLoaded", () => {
+    const wrap = document.querySelector(".series-progress-wrap") as HTMLElement;
+    if (!wrap) return;
+
+    const seriesSlug = wrap.dataset.series!;
+    const tutorialSlugs: string[] = JSON.parse(wrap.dataset.tutorials!);
+
+    let completedCount = 0;
+    let firstIncomplete: string | null = null;
+
+    tutorialSlugs.forEach((slug) => {
+      const isComplete = localStorage.getItem(`tutorial-complete:${slug}`);
+      if (isComplete) {
+        completedCount++;
+      } else if (!firstIncomplete) {
+        firstIncomplete = slug;
+      }
+
+      // Update the series list item if it exists
+      const item = document.querySelector(`.series-item[href="/tutorials/${slug}"]`) as HTMLElement;
+      if (item && isComplete) {
+        item.classList.add("series-item-done");
+      }
+    });
+
+    const total = tutorialSlugs.length;
+    const pct = total > 0 ? (completedCount / total) * 100 : 0;
+
+    const fill = document.getElementById("series-progress-fill");
+    const text = document.getElementById("series-progress-text");
+    if (fill) fill.style.width = `${pct}%`;
+    if (text) text.textContent = `${completedCount} / ${total} tutorials complete`;
+
+    // Show continue button
+    const continueBtn = document.getElementById("series-continue-btn") as HTMLAnchorElement;
+    const lastVisited = localStorage.getItem(`series-last:${seriesSlug}`);
+    const target = lastVisited ?? firstIncomplete ?? tutorialSlugs[0];
+    if (continueBtn && target && completedCount < total) {
+      continueBtn.href = `/tutorials/${target}`;
+      continueBtn.style.display = "inline-flex";
+    }
+  });
+</script>

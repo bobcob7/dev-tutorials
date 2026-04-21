@@ -1,0 +1,141 @@
+---
+interface Props {
+  tutorialSlug: string;
+  seriesSlug?: string;
+}
+const { tutorialSlug, seriesSlug } = Astro.props;
+---
+
+<div class="progress-wrap" data-tutorial={tutorialSlug} data-series={seriesSlug ?? ""}>
+  <div class="progress-bar">
+    <div class="progress-fill" id="progress-fill"></div>
+  </div>
+  <span class="progress-text" id="progress-text">0 / 0</span>
+</div>
+
+<script>
+  document.addEventListener("DOMContentLoaded", () => {
+    const wrap = document.querySelector(".progress-wrap") as HTMLElement;
+    if (!wrap) return;
+
+    const slug = wrap.dataset.tutorial!;
+    const storageKey = `tutorial-progress:${slug}`;
+
+    function loadProgress(): Record<string, boolean> {
+      try {
+        const raw = localStorage.getItem(storageKey);
+        return raw ? JSON.parse(raw) : {};
+      } catch {
+        return {};
+      }
+    }
+
+    function saveProgress(data: Record<string, boolean>) {
+      localStorage.setItem(storageKey, JSON.stringify(data));
+    }
+
+    // Find all step headings (h3 inside tutorial-content)
+    const content = document.querySelector(".tutorial-content");
+    if (!content) return;
+
+    const stepHeadings = Array.from(content.querySelectorAll("h3[id]")) as HTMLElement[];
+    if (stepHeadings.length === 0) return;
+
+    const progress = loadProgress();
+
+    // Add checkboxes to each step heading
+    stepHeadings.forEach((heading) => {
+      const stepId = heading.id;
+
+      const btn = document.createElement("button");
+      btn.className = "step-check";
+      btn.setAttribute("aria-label", "Mark step complete");
+      btn.dataset.step = stepId;
+
+      if (progress[stepId]) {
+        btn.classList.add("checked");
+      }
+
+      btn.addEventListener("click", (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        const current = loadProgress();
+        current[stepId] = !current[stepId];
+        saveProgress(current);
+        btn.classList.toggle("checked");
+        updateBar();
+        updateMilestones();
+      });
+
+      heading.insertBefore(btn, heading.firstChild);
+    });
+
+    // Add milestone markers to h2 headings
+    const milestoneHeadings = Array.from(
+      content.querySelectorAll("h2[id]")
+    ).filter((h) => {
+      const text = h.textContent ?? "";
+      return text.includes("Milestone") || text.includes("Step ");
+    }) as HTMLElement[];
+
+    milestoneHeadings.forEach((heading) => {
+      const indicator = document.createElement("span");
+      indicator.className = "milestone-indicator";
+      heading.appendChild(indicator);
+    });
+
+    function getStepsBetweenMilestones(milestoneEl: HTMLElement): string[] {
+      const steps: string[] = [];
+      let el = milestoneEl.nextElementSibling;
+      while (el) {
+        if (el.tagName === "H2") break;
+        if (el.tagName === "H3" && el.id) {
+          steps.push(el.id);
+        }
+        el = el.nextElementSibling;
+      }
+      return steps;
+    }
+
+    function updateBar() {
+      const current = loadProgress();
+      const done = stepHeadings.filter((h) => current[h.id]).length;
+      const total = stepHeadings.length;
+      const pct = total > 0 ? (done / total) * 100 : 0;
+
+      const fill = document.getElementById("progress-fill");
+      const text = document.getElementById("progress-text");
+      if (fill) fill.style.width = `${pct}%`;
+      if (text) text.textContent = `${done} / ${total} steps`;
+
+      // Store completion timestamp if all done
+      if (done === total && total > 0) {
+        localStorage.setItem(`tutorial-complete:${slug}`, Date.now().toString());
+      } else {
+        localStorage.removeItem(`tutorial-complete:${slug}`);
+      }
+
+      // Store last visited tutorial for the series
+      const series = wrap.dataset.series;
+      if (series) {
+        localStorage.setItem(`series-last:${series}`, slug);
+      }
+    }
+
+    function updateMilestones() {
+      const current = loadProgress();
+      milestoneHeadings.forEach((heading) => {
+        const childSteps = getStepsBetweenMilestones(heading);
+        const allDone = childSteps.length > 0 && childSteps.every((s) => current[s]);
+        const indicator = heading.querySelector(".milestone-indicator");
+        if (indicator) {
+          indicator.textContent = allDone ? " ✓" : "";
+          indicator.classList.toggle("complete", allDone);
+        }
+      });
+    }
+
+    updateBar();
+    updateMilestones();
+  });
+</script>
