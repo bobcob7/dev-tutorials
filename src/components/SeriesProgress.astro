@@ -11,12 +11,20 @@ interface Props {
 const { seriesSlug, tutorials } = Astro.props;
 ---
 
-<div class="series-progress-wrap" data-series={seriesSlug} data-tutorials={JSON.stringify(tutorials.map(t => t.slug))}>
-  <div class="series-progress-header">
-    <div class="progress-bar series-bar">
-      <div class="progress-fill" id="series-progress-fill"></div>
+<div class="series-progress-wrap" data-series={seriesSlug} data-tutorials={JSON.stringify(tutorials)} style="display:none">
+  <div class="series-progress-row">
+    <div class="series-progress-col">
+      <span class="progress-label" id="series-tut-label"></span>
+      <div class="progress-bar series-bar">
+        <div class="progress-fill" id="series-tut-fill"></div>
+      </div>
     </div>
-    <span class="progress-text" id="series-progress-text"></span>
+    <div class="series-progress-col">
+      <span class="progress-label" id="series-step-label"></span>
+      <div class="progress-bar series-bar">
+        <div class="progress-fill series-fill-step" id="series-step-fill"></div>
+      </div>
+    </div>
   </div>
   <a href="#" class="continue-btn" id="series-continue-btn" style="display:none">
     Continue where you left off →
@@ -29,51 +37,83 @@ const { seriesSlug, tutorials } = Astro.props;
     if (!wrap) return;
 
     const seriesSlug = wrap.dataset.series!;
-    const tutorialSlugs: string[] = JSON.parse(wrap.dataset.tutorials!);
+    const tutorials: { slug: string; title: string }[] = JSON.parse(wrap.dataset.tutorials!);
+    const tutorialSlugs = tutorials.map((t) => t.slug);
 
     let completedCount = 0;
     let hasAnyProgress = false;
+    let currentTutorial: { slug: string; title: string; done: number; total: number } | null = null;
 
-    tutorialSlugs.forEach((slug) => {
-      const isComplete = localStorage.getItem(`tutorial-complete:${slug}`);
+    tutorialSlugs.forEach((slug, idx) => {
+      const isComplete = !!localStorage.getItem(`tutorial-complete:${slug}`);
       if (isComplete) {
         completedCount++;
         hasAnyProgress = true;
       }
 
-      // Check if any steps have been started in this tutorial
+      // Check step-level progress
+      let stepDone = 0;
+      let stepTotal = 0;
       try {
-        const raw = localStorage.getItem(`tutorial-progress:${slug}`);
-        if (raw) {
-          const steps = JSON.parse(raw);
-          if (Object.values(steps).some((v) => v === true)) {
-            hasAnyProgress = true;
+        const stepsRaw = localStorage.getItem(`tutorial-steps:${slug}`);
+        if (stepsRaw) {
+          const stepIds: string[] = JSON.parse(stepsRaw);
+          stepTotal = stepIds.length;
+          const progressRaw = localStorage.getItem(`tutorial-progress:${slug}`);
+          if (progressRaw) {
+            const progress = JSON.parse(progressRaw);
+            stepDone = stepIds.filter((id: string) => progress[id] === true).length;
+            if (stepDone > 0) hasAnyProgress = true;
           }
         }
       } catch {}
 
-      // Update the series list item if it exists
+      // Track the first non-complete tutorial that has any progress or
+      // is the first one after completed tutorials (the "current" one)
+      if (!isComplete && !currentTutorial) {
+        currentTutorial = { slug, title: tutorials[idx].title, done: stepDone, total: stepTotal };
+      }
+
+      // Update the series list item
       const item = document.querySelector(`.series-item[href="/tutorials/${slug}"]`) as HTMLElement;
       if (item && isComplete) {
         item.classList.add("series-item-done");
       }
     });
 
+    if (!hasAnyProgress) return;
+    wrap.style.display = "block";
+
     const total = tutorialSlugs.length;
-    const pct = total > 0 ? (completedCount / total) * 100 : 0;
+    const tutPct = total > 0 ? (completedCount / total) * 100 : 0;
 
-    const fill = document.getElementById("series-progress-fill");
-    const text = document.getElementById("series-progress-text");
-    if (fill) fill.style.width = `${pct}%`;
-    if (text) text.textContent = hasAnyProgress
-      ? `${completedCount} / ${total} tutorials complete`
-      : `${total} tutorials`;
+    // Tutorial progress bar
+    const tutFill = document.getElementById("series-tut-fill");
+    const tutLabel = document.getElementById("series-tut-label");
+    if (tutFill) tutFill.style.width = `${tutPct}%`;
+    if (tutLabel) tutLabel.textContent = `${completedCount} / ${total} tutorials`;
 
-    // Only show continue button if the reader has started at least one step
+    // Current tutorial step progress bar
+    const stepFill = document.getElementById("series-step-fill");
+    const stepLabel = document.getElementById("series-step-label");
+    if (currentTutorial && currentTutorial.total > 0) {
+      const stepPct = (currentTutorial.done / currentTutorial.total) * 100;
+      if (stepFill) stepFill.style.width = `${stepPct}%`;
+      const shortTitle = currentTutorial.title.replace(/^Asteroid Dodger:\s*/, "");
+      if (stepLabel) stepLabel.textContent = `${currentTutorial.done} / ${currentTutorial.total} steps — ${shortTitle}`;
+    } else if (currentTutorial) {
+      if (stepLabel) stepLabel.textContent = `Next: ${currentTutorial.title.replace(/^Asteroid Dodger:\s*/, "")}`;
+    } else {
+      // All done
+      if (stepLabel) stepLabel.textContent = "All tutorials complete";
+      if (stepFill) stepFill.style.width = "100%";
+    }
+
+    // Continue button
     const continueBtn = document.getElementById("series-continue-btn") as HTMLAnchorElement;
-    if (hasAnyProgress && completedCount < total) {
+    if (completedCount < total) {
       const lastVisited = localStorage.getItem(`series-last:${seriesSlug}`);
-      const target = lastVisited ?? tutorialSlugs[0];
+      const target = lastVisited ?? (currentTutorial ? currentTutorial.slug : tutorialSlugs[0]);
       const bookmark = localStorage.getItem(`tutorial-bookmark:${target}`) ?? "";
       continueBtn.href = `/tutorials/${target}${bookmark ? "#" + bookmark : ""}`;
       continueBtn.style.display = "inline-flex";
