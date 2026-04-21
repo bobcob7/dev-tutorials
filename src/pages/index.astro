@@ -24,10 +24,17 @@ function seriesTutorialSlugs(seriesId: string): string[] {
     .map((t) => t.id);
 }
 
+function seriesTutorialInfo(seriesId: string): { slug: string; title: string }[] {
+  return allTutorials
+    .filter((t) => t.data.series === seriesId)
+    .sort((a, b) => (a.data.seriesOrder ?? 0) - (b.data.seriesOrder ?? 0))
+    .map((t) => ({ slug: t.id, title: t.data.title }));
+}
+
 const continueData = allSeries.map((s) => ({
   slug: s.id,
   title: s.data.title,
-  tutorialSlugs: seriesTutorialSlugs(s.id),
+  tutorials: seriesTutorialInfo(s.id),
 }));
 
 const standaloneData = standaloneTutorials.map((t) => ({

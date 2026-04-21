@@ -1,8 +1,13 @@
 ---
+interface SeriesTutorial {
+  slug: string;
+  title: string;
+}
+
 interface Series {
   slug: string;
   title: string;
-  tutorialSlugs: string[];
+  tutorials: SeriesTutorial[];
 }
 
 interface Standalone {
@@ -33,7 +38,7 @@ const { allSeries, standaloneTutorials } = Astro.props;
     const wrap = document.getElementById("continue-wrap") as HTMLElement;
     if (!wrap) return;
 
-    const allSeries: { slug: string; title: string; tutorialSlugs: string[] }[] = JSON.parse(wrap.dataset.series!);
+    const allSeries: { slug: string; title: string; tutorials: { slug: string; title: string }[] }[] = JSON.parse(wrap.dataset.series!);
     const standalone: { slug: string; title: string }[] = JSON.parse(wrap.dataset.standalone!);
     const cardsEl = document.getElementById("continue-cards")!;
     let hasCards = false;
@@ -50,48 +55,65 @@ const { allSeries, standaloneTutorials } = Astro.props;
       return false;
     }
 
-    function stepProgress(slug: string): { done: number; total: number } {
-      // tutorial-steps stores the array of step IDs from the page
+    function getStepProgress(slug: string): { done: number; total: number } {
       let stepIds: string[] = [];
       try {
         const raw = localStorage.getItem(`tutorial-steps:${slug}`);
         if (raw) stepIds = JSON.parse(raw);
       } catch {}
-
       const total = stepIds.length;
       let done = 0;
       try {
         const raw = localStorage.getItem(`tutorial-progress:${slug}`);
         if (raw) {
           const progress = JSON.parse(raw);
-          // Only count steps that still exist in the current step list
           done = stepIds.filter((id) => progress[id] === true).length;
         }
       } catch {}
       return { done, total };
     }
 
-    // Series cards
+    // Series cards — two bars
     allSeries.forEach((series) => {
       let seriesHasProgress = false;
       let completed = 0;
-      series.tutorialSlugs.forEach((slug) => {
-        if (localStorage.getItem(`tutorial-complete:${slug}`)) {
+      let currentTut: { slug: string; title: string; done: number; total: number } | null = null;
+
+      series.tutorials.forEach((tut) => {
+        const isComplete = !!localStorage.getItem(`tutorial-complete:${tut.slug}`);
+        if (isComplete) {
           completed++;
           seriesHasProgress = true;
         }
-        if (hasProgress(slug)) seriesHasProgress = true;
+        if (hasProgress(tut.slug)) seriesHasProgress = true;
+
+        if (!isComplete && !currentTut) {
+          const { done, total } = getStepProgress(tut.slug);
+          currentTut = { slug: tut.slug, title: tut.title, done, total };
+        }
       });
 
       if (!seriesHasProgress) return;
 
-      const total = series.tutorialSlugs.length;
+      const total = series.tutorials.length;
       if (completed >= total) return;
 
       const lastVisited = localStorage.getItem(`series-last:${series.slug}`);
       if (!lastVisited) return;
 
-      const pct = Math.round((completed / total) * 100);
+      const tutPct = Math.round((completed / total) * 100);
+      const stepPct = currentTut && currentTut.total > 0
+        ? Math.round((currentTut.done / currentTut.total) * 100)
+        : 0;
+      const shortTitle = currentTut
+        ? currentTut.title.replace(/^Asteroid Dodger:\s*/, "")
+        : "";
+      const stepLabel = currentTut && currentTut.total > 0
+        ? `${currentTut.done} / ${currentTut.total} steps — ${shortTitle}`
+        : shortTitle
+          ? `Next: ${shortTitle}`
+          : "";
+
       const bookmark = localStorage.getItem(`tutorial-bookmark:${lastVisited}`) ?? "";
 
       const card = document.createElement("a");
@@ -99,22 +121,28 @@ const { allSeries, standaloneTutorials } = Astro.props;
       card.className = "tutorial-card continue-card";
       card.innerHTML = `
         <span class="card-title">${series.title}</span>
-        <span class="card-desc">${completed} of ${total} tutorials complete</span>
-        <div class="progress-bar" style="margin-top:8px">
-          <div class="progress-fill" style="width:${pct}%"></div>
+        <div class="continue-bars">
+          <div class="continue-bar-col">
+            <span class="progress-label">${completed} / ${total} tutorials</span>
+            <div class="progress-bar"><div class="progress-fill" style="width:${tutPct}%"></div></div>
+          </div>
+          <div class="continue-bar-col">
+            <span class="progress-label">${stepLabel}</span>
+            <div class="progress-bar"><div class="progress-fill series-fill-step" style="width:${stepPct}%"></div></div>
+          </div>
         </div>
-        <span class="card-desc" style="margin-top:6px;font-size:12px;color:var(--accent-hover)">Continue →</span>
+        <span class="card-desc" style="margin-top:8px;font-size:12px;color:var(--accent-hover)">Continue →</span>
       `;
       cardsEl.appendChild(card);
       hasCards = true;
     });
 
-    // Standalone tutorial cards
+    // Standalone tutorial cards — single bar
     standalone.forEach((tut) => {
       if (!hasProgress(tut.slug)) return;
-      if (localStorage.getItem(`tutorial-complete:${tut.slug}`)) return; // finished
+      if (localStorage.getItem(`tutorial-complete:${tut.slug}`)) return;
 
-      const { done, total } = stepProgress(tut.slug);
+      const { done, total } = getStepProgress(tut.slug);
       const pct = total > 0 ? Math.round((done / total) * 100) : 0;
       const bookmark = localStorage.getItem(`tutorial-bookmark:${tut.slug}`) ?? "";
 
@@ -123,11 +151,11 @@ const { allSeries, standaloneTutorials } = Astro.props;
       card.className = "tutorial-card continue-card";
       card.innerHTML = `
         <span class="card-title">${tut.title}</span>
-        <span class="card-desc">${done} of ${total} steps complete</span>
-        <div class="progress-bar" style="margin-top:8px">
+        <span class="progress-label">${done} / ${total} steps</span>
+        <div class="progress-bar" style="margin-top:4px">
           <div class="progress-fill" style="width:${pct}%"></div>
         </div>
-        <span class="card-desc" style="margin-top:6px;font-size:12px;color:var(--accent-hover)">Continue →</span>
+        <span class="card-desc" style="margin-top:8px;font-size:12px;color:var(--accent-hover)">Continue →</span>
       `;
       cardsEl.appendChild(card);
       hasCards = true;
