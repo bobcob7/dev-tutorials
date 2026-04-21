@@ -4,6 +4,8 @@ description: "Parallelize asteroid updates and collision detection with rayon â€
 difficulty: advanced
 topics: ["Rust", "concurrency", "rayon", "game dev", "optimization"]
 publishDate: 2026-04-12
+series: rust-macroquad-asteroid-dodger
+seriesOrder: 15
 ---
 
 This tutorial picks up where the [large map and minimap tutorial](/tutorials/rust-macroquad-large-map) left off. With a 4000x4000 world and hundreds of asteroids, the update loop does real work each frame. This tutorial introduces Rust's concurrency model by parallelizing asteroid updates and collision pair generation using rayon â€” a library that makes data parallelism nearly effortless.

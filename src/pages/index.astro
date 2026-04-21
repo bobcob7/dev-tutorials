@@ -3,9 +3,18 @@ import { getCollection } from "astro:content";
 import BaseLayout from "../layouts/BaseLayout.astro";
 import Search from "../components/Search.astro";
 
-const tutorials = (await getCollection("tutorials")).sort(
+const allTutorials = await getCollection("tutorials");
+const allSeries = (await getCollection("series")).sort(
   (a, b) => b.data.publishDate.valueOf() - a.data.publishDate.valueOf()
 );
+
+const standaloneTutorials = allTutorials
+  .filter((t) => !t.data.series)
+  .sort((a, b) => b.data.publishDate.valueOf() - a.data.publishDate.valueOf());
+
+function seriesTutorialCount(seriesId: string): number {
+  return allTutorials.filter((t) => t.data.series === seriesId).length;
+}
 ---
 
 <BaseLayout title="Dev Tutorials">
@@ -16,20 +25,45 @@ const tutorials = (await getCollection("tutorials")).sort(
   </div>
 
   <div class="page" style="padding-top: 0">
-    <p class="section-label">{tutorials.length} tutorial{tutorials.length !== 1 ? "s" : ""}</p>
-    <div class="card-grid">
-      {tutorials.map((t) => (
-        <a href={`/tutorials/${t.id}`} class="tutorial-card">
-          <span class="card-title">{t.data.title}</span>
-          <span class="card-desc">{t.data.description}</span>
-          <div class="card-meta">
-            <span class={`badge badge-${t.data.difficulty}`}>{t.data.difficulty}</span>
-            {t.data.topics.slice(0, 3).map((tag) => (
-              <span class="topic-tag">{tag}</span>
-            ))}
-          </div>
-        </a>
-      ))}
-    </div>
+    {allSeries.length > 0 && (
+      <div>
+        <p class="section-label">Series</p>
+        <div class="card-grid">
+          {allSeries.map((s) => (
+            <a href={`/series/${s.id}`} class="tutorial-card series-card">
+              <span class="card-title">{s.data.title}</span>
+              <span class="card-desc">{s.data.description}</span>
+              <div class="card-meta">
+                <span class="badge badge-beginner">{s.data.difficulty}</span>
+                <span class="topic-tag">{seriesTutorialCount(s.id)} tutorials</span>
+                {s.data.topics.slice(0, 2).map((tag) => (
+                  <span class="topic-tag">{tag}</span>
+                ))}
+              </div>
+            </a>
+          ))}
+        </div>
+      </div>
+    )}
+
+    {standaloneTutorials.length > 0 && (
+      <div style="margin-top: 32px">
+        <p class="section-label">Standalone Tutorials</p>
+        <div class="card-grid">
+          {standaloneTutorials.map((t) => (
+            <a href={`/tutorials/${t.id}`} class="tutorial-card">
+              <span class="card-title">{t.data.title}</span>
+              <span class="card-desc">{t.data.description}</span>
+              <div class="card-meta">
+                <span class={`badge badge-${t.data.difficulty}`}>{t.data.difficulty}</span>
+                {t.data.topics.slice(0, 3).map((tag) => (
+                  <span class="topic-tag">{tag}</span>
+                ))}
+              </div>
+            </a>
+          ))}
+        </div>
+      </div>
+    )}
   </div>
 </BaseLayout>

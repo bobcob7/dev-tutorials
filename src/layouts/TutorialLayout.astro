@@ -1,6 +1,15 @@
 ---
 import BaseLayout from "./BaseLayout.astro";
 
+interface SeriesNav {
+  seriesTitle: string;
+  seriesSlug: string;
+  position: number;
+  total: number;
+  prev?: { slug: string; title: string };
+  next?: { slug: string; title: string };
+}
+
 interface Props {
   title: string;
   description: string;
@@ -8,9 +17,10 @@ interface Props {
   topics: string[];
   repo?: string;
   headings: { depth: number; slug: string; text: string }[];
+  seriesNav?: SeriesNav;
 }
 
-const { title, description, difficulty, topics, repo, headings } = Astro.props;
+const { title, description, difficulty, topics, repo, headings, seriesNav } = Astro.props;
 
 const toc = headings.filter((h) => h.depth === 2 || h.depth === 3);
 ---
@@ -18,6 +28,14 @@ const toc = headings.filter((h) => h.depth === 2 || h.depth === 3);
 <BaseLayout title={title} description={description}>
   <div class="tutorial-layout">
     <article class="tutorial-content" data-pagefind-body>
+      {seriesNav && (
+        <nav class="breadcrumb">
+          <a href={`/series/${seriesNav.seriesSlug}`}>{seriesNav.seriesTitle}</a>
+          <span class="breadcrumb-sep">/</span>
+          <span>{seriesNav.position} of {seriesNav.total}</span>
+        </nav>
+      )}
+
       <h1>{title}</h1>
       <div class="tutorial-meta">
         <span class={`badge badge-${difficulty}`}>{difficulty}</span>
@@ -25,6 +43,37 @@ const toc = headings.filter((h) => h.depth === 2 || h.depth === 3);
         {repo && <a href={repo} target="_blank" style="font-size:12px; margin-left:auto;">View repo →</a>}
       </div>
       <slot />
+
+      {seriesNav && (
+        <div class="page-nav">
+          {seriesNav.prev ? (
+            <a href={`/tutorials/${seriesNav.prev.slug}`} class="prev">
+              <span>←</span>
+              <div>
+                <span class="nav-label">Previous</span>
+                {seriesNav.prev.title.replace(/^Asteroid Dodger:\s*/, "")}
+              </div>
+            </a>
+          ) : (
+            <a href={`/series/${seriesNav.seriesSlug}`} class="prev">
+              <span>←</span>
+              <div>
+                <span class="nav-label">Series</span>
+                {seriesNav.seriesTitle}
+              </div>
+            </a>
+          )}
+          {seriesNav.next && (
+            <a href={`/tutorials/${seriesNav.next.slug}`} class="next">
+              <div>
+                <span class="nav-label">Next</span>
+                {seriesNav.next.title.replace(/^Asteroid Dodger:\s*/, "")}
+              </div>
+              <span>→</span>
+            </a>
+          )}
+        </div>
+      )}
     </article>
 
     {toc.length > 0 && (

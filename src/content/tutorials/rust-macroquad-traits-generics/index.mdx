@@ -4,6 +4,8 @@ description: "Extract shared behavior into traits and write generic functions �
 difficulty: intermediate
 topics: ["Rust", "traits", "generics", "game dev"]
 publishDate: 2026-04-12
+series: rust-macroquad-asteroid-dodger
+seriesOrder: 10
 ---
 
 This tutorial picks up where the [weapons and bombs tutorial](/tutorials/rust-macroquad-weapons-bombs) left off. The game has four entity types with nearly identical method signatures — `pos`, `update`, `draw`, `is_off_screen` — duplicated across separate files. This tutorial extracts those patterns into a trait, then writes generic functions that work with any entity type.

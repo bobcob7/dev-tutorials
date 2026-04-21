@@ -4,13 +4,39 @@ import TutorialLayout from "../../layouts/TutorialLayout.astro";
 
 export async function getStaticPaths() {
   const tutorials = await getCollection("tutorials");
-  return tutorials.map((entry) => ({
-    params: { slug: entry.id },
-    props: { entry },
-  }));
+  const allSeries = await getCollection("series");
+
+  return tutorials.map((entry) => {
+    let seriesNav = undefined;
+
+    if (entry.data.series) {
+      const seriesEntry = allSeries.find((s) => s.id === entry.data.series);
+      const siblings = tutorials
+        .filter((t) => t.data.series === entry.data.series)
+        .sort((a, b) => (a.data.seriesOrder ?? 0) - (b.data.seriesOrder ?? 0));
+
+      const idx = siblings.findIndex((t) => t.id === entry.id);
+      const prev = idx > 0 ? siblings[idx - 1] : undefined;
+      const next = idx < siblings.length - 1 ? siblings[idx + 1] : undefined;
+
+      seriesNav = {
+        seriesTitle: seriesEntry?.data.title ?? entry.data.series,
+        seriesSlug: entry.data.series,
+        position: idx + 1,
+        total: siblings.length,
+        prev: prev ? { slug: prev.id, title: prev.data.title } : undefined,
+        next: next ? { slug: next.id, title: next.data.title } : undefined,
+      };
+    }
+
+    return {
+      params: { slug: entry.id },
+      props: { entry, seriesNav },
+    };
+  });
 }
 
-const { entry } = Astro.props;
+const { entry, seriesNav } = Astro.props;
 const { Content, headings } = await render(entry);
 ---
 
@@ -21,6 +47,7 @@ const { Content, headings } = await render(entry);
   topics={entry.data.topics}
   repo={entry.data.repo}
   headings={headings}
+  seriesNav={seriesNav}
 >
   <Content />
 </TutorialLayout>

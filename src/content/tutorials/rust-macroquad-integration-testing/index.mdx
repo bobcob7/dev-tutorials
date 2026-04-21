@@ -4,6 +4,8 @@ description: "Test game logic without opening a window — shop purchases, power
 difficulty: intermediate
 topics: ["Rust", "testing", "integration", "game dev"]
 publishDate: 2026-04-12
+series: rust-macroquad-asteroid-dodger
+seriesOrder: 13
 ---
 
 The unit testing tutorial covered `collision.rs` — pure math functions with no dependencies on rendering or input. But most of the game logic lives in `game.rs`, which depends on `Sounds`, `screen_width()`, and `is_key_pressed()`. You cannot call `Game::new()` in a test without an active macroquad window.

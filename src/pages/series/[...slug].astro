@@ -1,0 +1,65 @@
+---
+import { getCollection, render } from "astro:content";
+import BaseLayout from "../../layouts/BaseLayout.astro";
+
+export async function getStaticPaths() {
+  const allSeries = await getCollection("series");
+  return allSeries.map((entry) => ({
+    params: { slug: entry.id },
+    props: { entry },
+  }));
+}
+
+const { entry } = Astro.props;
+const { Content } = await render(entry);
+
+const allTutorials = await getCollection("tutorials");
+const seriesTutorials = allTutorials
+  .filter((t) => t.data.series === entry.id)
+  .sort((a, b) => (a.data.seriesOrder ?? 0) - (b.data.seriesOrder ?? 0));
+
+const gameType = "game";
+const conceptType = "concept";
+
+function tutorialType(t: typeof seriesTutorials[0]): string {
+  const title = t.data.title.toLowerCase();
+  if (title.includes("testing") || title.includes("borrowing") || title.includes("lifetime") || title.includes("traits") || title.includes("generics") || title.includes("concurrency") || title.includes("project structure")) {
+    return conceptType;
+  }
+  return gameType;
+}
+---
+
+<BaseLayout title={entry.data.title} description={entry.data.description}>
+  <div class="page" style="max-width: 960px" data-pagefind-body>
+    <div class="series-header">
+      <div class="series-badge">Series · {seriesTutorials.length} tutorials</div>
+      <h1>{entry.data.title}</h1>
+      <p class="lead">{entry.data.description}</p>
+      <div class="series-meta">
+        <span class="badge badge-beginner">{entry.data.difficulty}</span>
+        {entry.data.topics.map((t) => <span class="topic-tag">{t}</span>)}
+      </div>
+    </div>
+
+    <Content />
+
+    <h2>Tutorials</h2>
+
+    <div class="series-list">
+      {seriesTutorials.map((t, i) => {
+        const type = tutorialType(t);
+        return (
+          <a href={`/tutorials/${t.id}`} class="series-item">
+            <span class="series-item-num">{i + 1}</span>
+            <div class="series-item-body">
+              <span class="series-item-title">{t.data.title.replace(/^Asteroid Dodger:\s*/, "")}</span>
+              <span class="series-item-desc">{t.data.description}</span>
+            </div>
+            <span class={`series-item-type series-type-${type}`}>{type}</span>
+          </a>
+        );
+      })}
+    </div>
+  </div>
+</BaseLayout>

@@ -1,0 +1,43 @@
+---
+title: "Build an Asteroid Dodger in Rust"
+description: "A 15-tutorial series that takes you from an empty window to a full arcade game with physics, sound, weapons, and a shop — while teaching Rust's ownership model, traits, testing, and concurrency along the way."
+topics: ["Rust", "macroquad", "game dev", "2D graphics"]
+difficulty: "beginner → advanced"
+publishDate: 2026-04-12
+---
+
+Build a complete top-down asteroid dodger in Rust using [macroquad](https://macroquad.rs/) — a small game library, not an engine. The series alternates between **game tutorials** that add features and **concept tutorials** that explain the Rust patterns behind them.
+
+No prior Rust experience required. If you've written C, Go, Python, or C++ before, the concepts will map cleanly.
+
+## What you'll build
+
+A spaceship that steers with rotation and momentum-based thrust. Irregularly shaped asteroids spawn and drift toward you, bouncing off each other with elastic physics. You can shoot them — large ones split into fragments. Four weapon types, deployable bombs, collectible power-ups, a between-rounds shop, rebindable controls, and a large scrollable world with a minimap radar.
+
+## Prerequisites
+
+**What you need to know:**
+
+<div className="skill-row">
+  <span className="skill-pill skill-need">C, Go, Python, or C++</span>
+  <span className="skill-pill skill-need">Variables & control flow</span>
+  <span className="skill-pill skill-need">Functions & structs</span>
+  <span className="skill-pill skill-need">Basic terminal / CLI</span>
+  <span className="skill-pill skill-noneed">Prior Rust experience</span>
+  <span className="skill-pill skill-noneed">Game dev experience</span>
+  <span className="skill-pill skill-noneed">Linear algebra</span>
+</div>
+
+**What you need installed:**
+
+<div className="tools-grid">
+  <div className="tool-card">
+    <span className="tool-name">Rust & Cargo</span>
+    <span className="tool-rec">rustup update</span>
+    <span className="tool-desc"><a href="https://www.rust-lang.org/tools/install">Install Rust</a> — or run <code>rustup update</code> if you already have it</span>
+  </div>
+  <div className="tool-card">
+    <span className="tool-name">No system libraries</span>
+    <span className="tool-desc">macroquad is pure Rust and brings everything it needs</span>
+  </div>
+</div>
