@@ -141,8 +141,14 @@ const { tutorialSlug, seriesSlug } = Astro.props;
       if (text) text.textContent = `${done} / ${total} steps`;
 
       // Store step count and IDs so other pages can compute progress
-      // without needing to load the tutorial page
       localStorage.setItem(`tutorial-steps:${slug}`, JSON.stringify(currentStepIds));
+
+      // Clear any dismiss on the home page so the card reappears with updated progress
+      localStorage.removeItem(`continue-dismiss:tutorial:${slug}`);
+      const series = wrap.dataset.series;
+      if (series) {
+        localStorage.removeItem(`continue-dismiss:series:${series}`);
+      }
 
       // Store completion timestamp if all done
       if (done === total && total > 0) {

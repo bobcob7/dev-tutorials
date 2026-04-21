@@ -29,7 +29,9 @@ const { allSeries, standaloneTutorials } = Astro.props;
   data-standalone={JSON.stringify(standaloneTutorials)}
   style="display:none"
 >
-  <p class="section-label">Continue reading</p>
+  <div class="continue-header">
+    <p class="section-label" style="margin-bottom:0">Continue reading</p>
+  </div>
   <div id="continue-cards" class="card-grid"></div>
 </div>
 
@@ -115,24 +117,34 @@ const { allSeries, standaloneTutorials } = Astro.props;
           : "";
 
       const bookmark = localStorage.getItem(`tutorial-bookmark:${lastVisited}`) ?? "";
+      const dismissKey = `continue-dismiss:series:${series.slug}`;
+      if (localStorage.getItem(dismissKey)) return;
 
-      const card = document.createElement("a");
-      card.href = `/tutorials/${lastVisited}${bookmark ? "#" + bookmark : ""}`;
-      card.className = "tutorial-card continue-card";
+      const card = document.createElement("div");
+      card.className = "continue-card-wrap";
       card.innerHTML = `
-        <span class="card-title">${series.title}</span>
-        <div class="continue-bars">
-          <div class="continue-bar-col">
-            <span class="progress-label">${completed} / ${total} tutorials</span>
-            <div class="progress-bar"><div class="progress-fill" style="width:${tutPct}%"></div></div>
+        <a href="/tutorials/${lastVisited}${bookmark ? "#" + bookmark : ""}" class="tutorial-card continue-card">
+          <span class="card-title">${series.title}</span>
+          <div class="continue-bars">
+            <div class="continue-bar-col">
+              <span class="progress-label">${completed} / ${total} tutorials</span>
+              <div class="progress-bar"><div class="progress-fill" style="width:${tutPct}%"></div></div>
+            </div>
+            <div class="continue-bar-col">
+              <span class="progress-label">${stepLabel}</span>
+              <div class="progress-bar"><div class="progress-fill series-fill-step" style="width:${stepPct}%"></div></div>
+            </div>
           </div>
-          <div class="continue-bar-col">
-            <span class="progress-label">${stepLabel}</span>
-            <div class="progress-bar"><div class="progress-fill series-fill-step" style="width:${stepPct}%"></div></div>
-          </div>
-        </div>
-        <span class="card-desc" style="margin-top:8px;font-size:12px;color:var(--accent-hover)">Continue →</span>
+          <span class="card-desc" style="margin-top:8px;font-size:12px;color:var(--accent-hover)">Continue →</span>
+        </a>
+        <button class="dismiss-btn" aria-label="Dismiss" title="Dismiss">×</button>
       `;
+      card.querySelector(".dismiss-btn")!.addEventListener("click", (e) => {
+        e.preventDefault();
+        localStorage.setItem(dismissKey, Date.now().toString());
+        card.remove();
+        if (cardsEl.children.length === 0) wrap.style.display = "none";
+      });
       cardsEl.appendChild(card);
       hasCards = true;
     });
@@ -141,22 +153,32 @@ const { allSeries, standaloneTutorials } = Astro.props;
     standalone.forEach((tut) => {
       if (!hasProgress(tut.slug)) return;
       if (localStorage.getItem(`tutorial-complete:${tut.slug}`)) return;
+      const dismissKey = `continue-dismiss:tutorial:${tut.slug}`;
+      if (localStorage.getItem(dismissKey)) return;
 
       const { done, total } = getStepProgress(tut.slug);
       const pct = total > 0 ? Math.round((done / total) * 100) : 0;
       const bookmark = localStorage.getItem(`tutorial-bookmark:${tut.slug}`) ?? "";
 
-      const card = document.createElement("a");
-      card.href = `/tutorials/${tut.slug}${bookmark ? "#" + bookmark : ""}`;
-      card.className = "tutorial-card continue-card";
+      const card = document.createElement("div");
+      card.className = "continue-card-wrap";
       card.innerHTML = `
-        <span class="card-title">${tut.title}</span>
-        <span class="progress-label">${done} / ${total} steps</span>
-        <div class="progress-bar" style="margin-top:4px">
-          <div class="progress-fill" style="width:${pct}%"></div>
-        </div>
-        <span class="card-desc" style="margin-top:8px;font-size:12px;color:var(--accent-hover)">Continue →</span>
+        <a href="/tutorials/${tut.slug}${bookmark ? "#" + bookmark : ""}" class="tutorial-card continue-card">
+          <span class="card-title">${tut.title}</span>
+          <span class="progress-label">${done} / ${total} steps</span>
+          <div class="progress-bar" style="margin-top:4px">
+            <div class="progress-fill" style="width:${pct}%"></div>
+          </div>
+          <span class="card-desc" style="margin-top:8px;font-size:12px;color:var(--accent-hover)">Continue →</span>
+        </a>
+        <button class="dismiss-btn" aria-label="Dismiss" title="Dismiss">×</button>
       `;
+      card.querySelector(".dismiss-btn")!.addEventListener("click", (e) => {
+        e.preventDefault();
+        localStorage.setItem(dismissKey, Date.now().toString());
+        card.remove();
+        if (cardsEl.children.length === 0) wrap.style.display = "none";
+      });
       cardsEl.appendChild(card);
       hasCards = true;
     });
