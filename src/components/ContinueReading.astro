@@ -51,13 +51,21 @@ const { allSeries, standaloneTutorials } = Astro.props;
     }
 
     function stepProgress(slug: string): { done: number; total: number } {
-      const total = parseInt(localStorage.getItem(`tutorial-steps:${slug}`) ?? "0", 10);
+      // tutorial-steps stores the array of step IDs from the page
+      let stepIds: string[] = [];
+      try {
+        const raw = localStorage.getItem(`tutorial-steps:${slug}`);
+        if (raw) stepIds = JSON.parse(raw);
+      } catch {}
+
+      const total = stepIds.length;
       let done = 0;
       try {
         const raw = localStorage.getItem(`tutorial-progress:${slug}`);
         if (raw) {
-          const steps = JSON.parse(raw);
-          done = Object.values(steps).filter((v) => v === true).length;
+          const progress = JSON.parse(raw);
+          // Only count steps that still exist in the current step list
+          done = stepIds.filter((id) => progress[id] === true).length;
         }
       } catch {}
       return { done, total };

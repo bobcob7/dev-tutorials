@@ -19,24 +19,10 @@ const { tutorialSlug, seriesSlug } = Astro.props;
     if (!wrap) return;
 
     const slug = wrap.dataset.tutorial!;
-    const storageKey = `tutorial-progress:${slug}`;
+    const progressKey = `tutorial-progress:${slug}`;
+    const versionKey = `tutorial-version:${slug}`;
 
-    function loadProgress(): Record<string, boolean> {
-      try {
-        const raw = localStorage.getItem(storageKey);
-        return raw ? JSON.parse(raw) : {};
-      } catch {
-        return {};
-      }
-    }
-
-    function saveProgress(data: Record<string, boolean>) {
-      localStorage.setItem(storageKey, JSON.stringify(data));
-    }
-
-    // Find step headings. Series tutorials use h3 for steps; standalone
-    // tutorials use h2 (e.g. "## Step 1 — ..."). Use h3 if any exist,
-    // otherwise fall back to h2 headings that look like steps.
+    // Find step headings. Series tutorials use h3; standalone use h2.
     const content = document.querySelector(".tutorial-content");
     if (!content) return;
 
@@ -48,6 +34,43 @@ const { tutorialSlug, seriesSlug } = Astro.props;
       }) as HTMLElement[];
     }
     if (stepHeadings.length === 0) return;
+
+    // Build the current version fingerprint from step IDs
+    const currentStepIds = stepHeadings.map((h) => h.id);
+    const currentVersion = currentStepIds.join(",");
+
+    // Load and reconcile progress against current page structure
+    function loadProgress(): Record<string, boolean> {
+      try {
+        const raw = localStorage.getItem(progressKey);
+        if (!raw) return {};
+
+        const stored: Record<string, boolean> = JSON.parse(raw);
+        const storedVersion = localStorage.getItem(versionKey);
+
+        if (storedVersion === currentVersion) return stored;
+
+        // Version changed — keep progress for step IDs that still exist,
+        // drop orphans from renamed/removed steps
+        const reconciled: Record<string, boolean> = {};
+        for (const id of currentStepIds) {
+          if (id in stored) {
+            reconciled[id] = stored[id];
+          }
+        }
+        // Save the cleaned-up version
+        localStorage.setItem(progressKey, JSON.stringify(reconciled));
+        localStorage.setItem(versionKey, currentVersion);
+        return reconciled;
+      } catch {
+        return {};
+      }
+    }
+
+    function saveProgress(data: Record<string, boolean>) {
+      localStorage.setItem(progressKey, JSON.stringify(data));
+      localStorage.setItem(versionKey, currentVersion);
+    }
 
     const progress = loadProgress();
 
@@ -78,8 +101,7 @@ const { tutorialSlug, seriesSlug } = Astro.props;
       heading.insertBefore(btn, heading.firstChild);
     });
 
-    // Add milestone markers to h2 headings (only when steps are h3,
-    // i.e. milestones are parents of steps, not the steps themselves)
+    // Add milestone markers to h2 headings (only when steps are h3)
     const stepsAreH3 = content.querySelectorAll("h3[id]").length > 0;
     const milestoneHeadings: HTMLElement[] = stepsAreH3
       ? (Array.from(content.querySelectorAll("h2[id]")).filter((h) => {
@@ -109,8 +131,8 @@ const { tutorialSlug, seriesSlug } = Astro.props;
 
     function updateBar() {
       const current = loadProgress();
-      const done = stepHeadings.filter((h) => current[h.id]).length;
-      const total = stepHeadings.length;
+      const done = currentStepIds.filter((id) => current[id]).length;
+      const total = currentStepIds.length;
       const pct = total > 0 ? (done / total) * 100 : 0;
 
       const fill = document.getElementById("progress-fill");
@@ -118,8 +140,9 @@ const { tutorialSlug, seriesSlug } = Astro.props;
       if (fill) fill.style.width = `${pct}%`;
       if (text) text.textContent = `${done} / ${total} steps`;
 
-      // Store total step count so other pages can read it
-      localStorage.setItem(`tutorial-steps:${slug}`, total.toString());
+      // Store step count and IDs so other pages can compute progress
+      // without needing to load the tutorial page
+      localStorage.setItem(`tutorial-steps:${slug}`, JSON.stringify(currentStepIds));
 
       // Store completion timestamp if all done
       if (done === total && total > 0) {
@@ -130,8 +153,8 @@ const { tutorialSlug, seriesSlug } = Astro.props;
 
       // Only store bookmark and series-last when at least one step is checked
       if (done > 0) {
-        const firstIncomplete = stepHeadings.find((h) => !current[h.id]);
-        const bookmark = firstIncomplete ? firstIncomplete.id : "";
+        const firstIncomplete = currentStepIds.find((id) => !current[id]);
+        const bookmark = firstIncomplete ?? "";
         localStorage.setItem(`tutorial-bookmark:${slug}`, bookmark);
 
         const series = wrap.dataset.series;
