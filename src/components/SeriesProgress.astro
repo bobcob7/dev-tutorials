@@ -57,12 +57,13 @@ const { seriesSlug, tutorials } = Astro.props;
     if (fill) fill.style.width = `${pct}%`;
     if (text) text.textContent = `${completedCount} / ${total} tutorials complete`;
 
-    // Show continue button
+    // Show continue button with bookmark hash
     const continueBtn = document.getElementById("series-continue-btn") as HTMLAnchorElement;
     const lastVisited = localStorage.getItem(`series-last:${seriesSlug}`);
     const target = lastVisited ?? firstIncomplete ?? tutorialSlugs[0];
     if (continueBtn && target && completedCount < total) {
-      continueBtn.href = `/tutorials/${target}`;
+      const bookmark = localStorage.getItem(`tutorial-bookmark:${target}`) ?? "";
+      continueBtn.href = `/tutorials/${target}${bookmark ? "#" + bookmark : ""}`;
       continueBtn.style.display = "inline-flex";
     }
   });

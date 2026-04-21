@@ -115,6 +115,11 @@ const { tutorialSlug, seriesSlug } = Astro.props;
         localStorage.removeItem(`tutorial-complete:${slug}`);
       }
 
+      // Find first incomplete step
+      const firstIncomplete = stepHeadings.find((h) => !current[h.id]);
+      const bookmark = firstIncomplete ? firstIncomplete.id : "";
+      localStorage.setItem(`tutorial-bookmark:${slug}`, bookmark);
+
       // Store last visited tutorial for the series
       const series = wrap.dataset.series;
       if (series) {
