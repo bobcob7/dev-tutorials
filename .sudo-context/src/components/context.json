@@ -1,0 +1,16 @@
+{
+  "repo": "bobcob7/tutorials",
+  "directory": "src/components",
+  "git_ref": "01d37a5",
+  "updated_at": "2026-04-21T15:21:14Z",
+  "sections": {
+    "description": "Astro components for progress tracking, search, and continue-reading UI.",
+    "purpose": "Client-side interactive components that enhance the static tutorial pages with localStorage-based progress tracking.",
+    "functionality": "ProgressBar.astro: injects checkboxes on step headings (h3 or h2 fallback), tracks completion in localStorage, stores version fingerprint for reconciliation, updates progress bar and milestone indicators. SeriesProgress.astro: reads all tutorial progress for a series, shows two stacked bars (tutorials complete + current tutorial steps), continue button with bookmark hash. ContinueReading.astro: home page cards for in-progress series and standalone tutorials, two-bar layout for series, dismiss button with auto-clear on new progress. Search.astro: Pagefind UI integration.",
+    "files": "ProgressBar.astro, SeriesProgress.astro, ContinueReading.astro, Search.astro",
+    "dependencies": "No npm dependencies \u2014 all vanilla JS using localStorage API and DOM manipulation.",
+    "strengths": "Zero-dependency client-side progress. Automatic version reconciliation when tutorials change. Dismiss state auto-clears on new progress.",
+    "weaknesses": "localStorage only \u2014 no cross-device sync. Step detection relies on heading structure conventions.",
+    "test_coverage": "No automated tests. Manually verified in browser."
+  }
+}

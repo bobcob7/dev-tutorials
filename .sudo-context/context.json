@@ -1,0 +1,16 @@
+{
+  "repo": "bobcob7/tutorials",
+  "directory": ".",
+  "git_ref": "01d37a5",
+  "updated_at": "2026-04-21T15:20:13Z",
+  "sections": {
+    "description": "Astro-based static tutorial site with series support, progress tracking, and search. Deployed to Cloudflare Workers.",
+    "purpose": "Host step-by-step developer tutorials grouped into series with local progress tracking, breadcrumb navigation, and a search index.",
+    "functionality": "Content collections for tutorials and series (Astro + Zod schema). Series are first-class: landing pages at /series/[slug] with auto-generated tutorial lists, shared prerequisites, and aggregate progress bars. Tutorial pages have breadcrumbs, prev/next navigation, and per-step checkbox progress tracking stored in localStorage. Progress reconciles automatically when content changes. Home page shows continue-reading cards for in-progress series and standalone tutorials. CSS component library: callouts, step badges, skill pills, tool cards, code block headers, token highlighting. Pagefind search indexing.",
+    "files": "src/content.config.ts (tutorials + series collections), src/content/tutorials/**/index.mdx (tutorial content), src/content/series/**/index.mdx (series landing pages), src/layouts/BaseLayout.astro (root layout), src/layouts/TutorialLayout.astro (tutorial layout with breadcrumbs + prev/next + progress bar), src/pages/index.astro (home with continue-reading), src/pages/tutorials/[...slug].astro (tutorial routes with series nav computation), src/pages/series/[...slug].astro (series routes), src/components/ProgressBar.astro (per-tutorial step tracking), src/components/SeriesProgress.astro (series-level two-bar progress), src/components/ContinueReading.astro (home page continue cards), src/components/Search.astro (Pagefind), src/styles/global.css (full design system), CONTRIBUTING.md (author guide), .claude/skills/add-tutorial/ (skill + template), .claude/skills/review-tutorial/ (review skill)",
+    "dependencies": "astro 6.x, pagefind (search indexing at build time), macroquad 0.4.x (referenced in Rust tutorials, not a site dependency)",
+    "strengths": "Series as first-class content type with automatic navigation and progress. Local progress tracking with no auth required. Content versioning reconciles stale localStorage on tutorial updates. Rich CSS component library for consistent tutorial styling. All client-side JS is vanilla \u2014 no framework dependency.",
+    "weaknesses": "Progress tracking is localStorage-only \u2014 doesn't sync across devices. Series tutorial type detection (game vs concept) uses title string matching rather than frontmatter. No pagination for large tutorial lists. No dark/light theme toggle.",
+    "test_coverage": "No automated tests. Tutorials verified by subagent compilation checks. Site verified by npm run build (Astro static generation + Pagefind indexing)."
+  }
+}

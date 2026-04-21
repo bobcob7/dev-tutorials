@@ -42,7 +42,7 @@ src/content/tutorials/YOUR-SLUG/
 
 ## Step 4 — Frontmatter
 
-All fields except `repo` are required:
+All fields except `repo`, `series`, and `seriesOrder` are required:
 
 ```yaml
 ---
@@ -52,6 +52,8 @@ difficulty: beginner        # beginner | intermediate | advanced
 topics: ["Tag1", "Tag2"]
 publishDate: YYYY-MM-DD
 repo: "https://github.com/owner/repo"  # omit if not applicable
+series: my-series-slug      # omit for standalone tutorials
+seriesOrder: 1              # position in the series (1-based)
 ---
 ```
 
@@ -63,6 +65,37 @@ Difficulty guide:
 | `intermediate` | Comfortable with the language, unfamiliar with the patterns |
 | `advanced` | Experienced; complex subsystems or cross-cutting changes |
 
+### Series tutorials
+
+If the tutorial is part of a series, set `series` to the series slug and `seriesOrder`
+to its position. The series must exist at `src/content/series/SERIES-SLUG/index.mdx`.
+Series tutorials automatically get:
+- **Breadcrumb** navigation at the top (series name + position)
+- **Prev/next** buttons at the bottom
+- **Progress tracking** — checkboxes on each step heading, progress bar
+
+For series tutorials, shared prerequisites belong on the **series landing page**, not
+on each individual tutorial. Individual tutorials should only note their immediate
+dependency ("Completed the [previous tutorial]").
+
+### Creating a new series
+
+If this tutorial starts a new series:
+
+1. Create `src/content/series/SERIES-SLUG/index.mdx` with frontmatter:
+   ```yaml
+   ---
+   title: "Series Title"
+   description: "What the series covers end to end."
+   topics: ["Tag1", "Tag2"]
+   difficulty: "beginner → advanced"
+   publishDate: YYYY-MM-DD
+   ---
+   ```
+2. The MDX body is the series landing page — include shared prerequisites
+   (skill pills, tool cards) and a description of what readers will build.
+3. The tutorial list is auto-generated from tutorials with matching `series` field.
+
 ---
 
 ## Step 5 — Content conventions
@@ -72,7 +105,14 @@ See [template.md](template.md) for a complete starter template.
 **Structure:** Open with 1–2 sentences of context (no heading), then `##` for major
 sections (appear in the TOC sidebar), `###` for subsections.
 
-**Callouts** — three variants, always `className=` (never `class=`):
+**Progress tracking:** Step headings (`### Step N —` or `## Step N —`) automatically
+get checkboxes from the progress system. Use consistent heading patterns so the
+system can find them. The progress bar, checkboxes, and localStorage persistence
+are all handled automatically — no manual wiring needed.
+
+### Callouts
+
+Three variants, always `className=` (never `class=`):
 
 ```html
 <div className="callout callout-info">
@@ -91,13 +131,29 @@ sections (appear in the TOC sidebar), `###` for subsections.
 </div>
 ```
 
-**Images** — Astro optimises them automatically at build time:
+### CSS components
+
+These are available in all tutorials:
+
+| Component | Classes | Usage |
+|---|---|---|
+| **Step badge** | `.step-badge` | `<span className="step-badge">Step 1 of 5</span>` |
+| **Steps grid** | `.steps-grid` + `.step-card` | Overview grid with `.step-num`, `.step-name`, `.step-desc` |
+| **Skill pills** | `.skill-row` + `.skill-pill` | `.skill-need` (green) or `.skill-noneed` (strikethrough) |
+| **Tool cards** | `.tools-grid` + `.tool-card` | `.tool-name`, `.tool-rec`, `.tool-desc` |
+| **Code block header** | `.code-block` + `.code-header` | Wraps code fence with `.code-filename` + `.code-link` |
+| **File reference** | `.file-ref` | Inline monospace badge for file paths |
+| **Token highlighting** | `.token-keyword`, `.token-add`, `.token-remove`, etc. | Manual syntax spans in code blocks |
+
+### Images
+
+Astro optimises them automatically at build time:
 
 ```mdx
 ![Description of what's shown](./screenshot-name.png)
 ```
 
-**CRITICAL — MDX is JSX, not HTML:**
+### CRITICAL — MDX is JSX, not HTML
 
 | HTML attribute | MDX/JSX |
 |---|---|
