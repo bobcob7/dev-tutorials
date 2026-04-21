@@ -1,0 +1,239 @@
+---
+title: "Asteroid Dodger: Concurrency"
+description: "Parallelize asteroid updates and collision detection with rayon — an introduction to Rust's fearless concurrency."
+difficulty: advanced
+topics: ["Rust", "concurrency", "rayon", "game dev", "optimization"]
+publishDate: 2026-04-12
+---
+
+This tutorial picks up where the [large map and minimap tutorial](/tutorials/rust-macroquad-large-map) left off. With a 4000x4000 world and hundreds of asteroids, the update loop does real work each frame. This tutorial introduces Rust's concurrency model by parallelizing asteroid updates and collision pair generation using rayon — a library that makes data parallelism nearly effortless.
+
+## What you'll add
+
+- Parallel asteroid updates with `par_iter_mut`
+- Understanding of `Send` and `Sync` — the traits behind "fearless concurrency"
+- Parallel collision pair generation from the spatial grid
+- Knowledge of when parallelism helps and when it hurts
+
+## Milestones overview
+
+<div className="steps-grid">
+  <div className="step-card">
+    <span className="step-num">Milestone 1</span>
+    <span className="step-name">Parallel Iteration</span>
+    <span className="step-desc">rayon, par_iter_mut, Send and Sync</span>
+  </div>
+  <div className="step-card">
+    <span className="step-num">Milestone 2</span>
+    <span className="step-name">Parallel Collision</span>
+    <span className="step-desc">Grid pair generation, when not to parallelize</span>
+  </div>
+</div>
+
+## Prerequisites
+
+- Completed the [large map and minimap tutorial](/tutorials/rust-macroquad-large-map)
+- Project compiles and runs with camera, minimap, and spatial grid collision detection
+
+---
+
+## Milestone 1 — Parallel iteration with rayon
+
+<span className="step-badge">Milestone 1 of 2</span>
+
+### Step 1 — Add rayon and parallelize asteroid updates
+
+Add rayon to the project:
+
+```bash
+cargo add rayon
+```
+
+This adds `rayon = "1"` to `Cargo.toml`. Rayon provides a work-stealing thread pool and drop-in parallel iterators. It spawns one thread per CPU core, and distributes work across them automatically. You don't manage threads, locks, or channels — you swap `.iter()` for `.par_iter()` and rayon handles the rest.
+
+In `src/game.rs`, add the rayon prelude:
+
+```rust
+use rayon::prelude::*;
+```
+
+Find the asteroid update loop in `Game::update`. It currently looks like this:
+
+```rust
+for asteroid in &mut self.asteroids {
+    asteroid.update(dt);
+}
+```
+
+Replace it with:
+
+```rust
+self.asteroids.par_iter_mut().for_each(|asteroid| {
+    asteroid.update(dt);
+});
+```
+
+`par_iter_mut()` splits the slice across rayon's thread pool. Each asteroid's `update` method only reads and writes its own `pos` and `vel` fields — no shared state, no aliasing. The borrow checker already enforces this: `&mut Asteroid` gives exclusive access to one asteroid, so two threads can never touch the same one.
+
+Rayon requires the closure to be `Send` — meaning it can safely move to another thread. `&mut Asteroid` is `Send` because `Asteroid` contains only `Vec2`, `f32`, `Vec<Vec2>`, and `u8`. These are all plain data with no interior mutability or reference counting. The compiler checks this at build time; if it's not safe, it won't compile.
+
+### Step 2 — Send and Sync
+
+Two marker traits govern Rust's concurrency safety:
+
+- **`Send`** — a value can be moved to another thread. Almost all types are `Send`. A `Vec<Asteroid>`, an `f32`, a `String` — all `Send`.
+- **`Sync`** — a value can be shared between threads via `&T`. A type is `Sync` if `&T` is `Send`. Immutable data is naturally `Sync`.
+
+Most Rust types implement both automatically. The compiler derives them unless a type contains something inherently thread-unsafe. Here's what would break:
+
+```rust
+use std::rc::Rc;
+
+pub struct Asteroid {
+    pub pos: Vec2,
+    pub vel: Vec2,
+    pub radius: f32,
+    pub vertices: Vec<Vec2>,
+    pub generation: u8,
+    pub label: Rc<String>,  // Rc is NOT Send
+}
+```
+
+With that `Rc` field, `Asteroid` is no longer `Send`. Calling `par_iter_mut()` on a `Vec<Asteroid>` would fail with a compile error like:
+
+```
+error[E0277]: `Rc<String>` cannot be sent between threads safely
+```
+
+This is "fearless concurrency" — the compiler prevents data races at compile time, not at runtime. You never get a silent corruption bug. If it compiles, it's thread-safe.
+
+<div className="callout callout-info">
+  <span className="callout-title">Rc vs Arc</span>
+  <p>
+    <code>Rc&lt;T&gt;</code> uses non-atomic reference counting — fast but single-threaded only.
+    <code>Arc&lt;T&gt;</code> uses atomic reference counting — slightly slower but <code>Send + Sync</code>.
+    If you ever need shared ownership across threads, swap <code>Rc</code> for <code>Arc</code>.
+    In this game, asteroids own their data outright, so neither is needed.
+  </p>
+</div>
+
+---
+
+## Milestone 2 — Parallel collision
+
+<span className="step-badge">Milestone 2 of 2</span>
+
+### Step 3 — Parallel pair generation
+
+The spatial grid's `potential_pairs()` method iterates cells sequentially, collecting pairs of asteroid indices that share a cell. With a large world and many cells, this is a good candidate for parallelism — each cell can be processed independently.
+
+Add a new method to your `Grid` implementation in `src/collision.rs`:
+
+```rust
+pub fn potential_pairs_parallel(&self) -> Vec<(usize, usize)> {
+    use rayon::prelude::*;
+    let cell_pairs: Vec<Vec<(usize, usize)>> = self.cells.par_iter()
+        .map(|cell| {
+            let mut pairs = Vec::new();
+            for a in 0..cell.len() {
+                for b in (a + 1)..cell.len() {
+                    let pair = if cell[a] < cell[b] {
+                        (cell[a], cell[b])
+                    } else {
+                        (cell[b], cell[a])
+                    };
+                    pairs.push(pair);
+                }
+            }
+            pairs
+        })
+        .collect();
+    let mut all_pairs: Vec<(usize, usize)> = cell_pairs.into_iter().flatten().collect();
+    all_pairs.sort_unstable();
+    all_pairs.dedup();
+    all_pairs
+}
+```
+
+The pattern: each cell produces its own `Vec` of pairs. No shared mutable state — each closure works with an independent local `Vec`. After all cells are processed, `flatten` merges the results into a single list.
+
+Asteroids that span multiple cells appear in multiple cell lists, creating duplicate pairs. The canonical ordering (`if cell[a] < cell[b]`) ensures duplicates are identical, then `sort_unstable` + `dedup` removes them. This is faster than checking `contains()` on every insert — `contains()` is O(n) per check, while sort + dedup is O(n log n) total.
+
+In `Game::update`, replace the `potential_pairs()` call with `potential_pairs_parallel()`:
+
+```rust
+let pairs = self.grid.potential_pairs_parallel();
+```
+
+### Step 4 — When NOT to parallelize
+
+Not everything benefits from threads. Here are the cases in this game where parallelism doesn't help or actively hurts.
+
+**The game loop is sequential.** Each frame runs update, then draw, then `next_frame().await`. These steps depend on each other — draw reads the state that update just wrote. This pipeline stays single-threaded.
+
+**Drawing is not thread-safe.** macroquad's draw functions (`draw_circle`, `draw_triangle`, `draw_line`) use global state internally. Calling them from multiple threads would corrupt that state. All rendering and input handling must happen on the main thread.
+
+<div className="callout callout-warning">
+  <span className="callout-title">macroquad's main thread requirement</span>
+  <p>
+    macroquad uses thread-local storage for its rendering context. All draw calls
+    and input reads (<code>is_key_down</code>, <code>mouse_position</code>) must happen on the
+    main thread. Only pure computation — physics, collision math, AI, pathfinding —
+    benefits from parallelism.
+  </p>
+</div>
+
+**Collision resolution can't be trivially parallelized.** The `resolve_collisions` function processes pairs sequentially because each collision modifies both asteroids in the pair. Two pairs might share an index — asteroid 5 might collide with both asteroid 3 and asteroid 7 in the same frame. Processing those pairs in parallel would create a data race on asteroid 5's position and velocity. The compiler would reject this: you can't have two `&mut` references to the same asteroid simultaneously.
+
+**Small workloads don't benefit.** Rayon's thread pool has overhead — distributing work, synchronizing results, and cache effects from data moving between cores. For fewer than ~100 asteroids, the sequential loop finishes faster than rayon can distribute the work. The parallel version pays off at 500+ asteroids with the spatial grid, which is exactly where the large map pushes you.
+
+**Measuring the difference.** Add timing to see the actual impact:
+
+```rust
+use std::time::Instant;
+
+// In Game::update, around the asteroid update loop:
+let t0 = Instant::now();
+self.asteroids.par_iter_mut().for_each(|asteroid| {
+    asteroid.update(dt);
+});
+let update_us = t0.elapsed().as_micros();
+
+let t1 = Instant::now();
+let pairs = self.grid.potential_pairs_parallel();
+let pairs_us = t1.elapsed().as_micros();
+
+if get_time() as u64 % 60 == 0 {
+    println!("asteroid update: {}us, pair gen: {}us, asteroids: {}",
+        update_us, pairs_us, self.asteroids.len());
+}
+```
+
+Run with 500+ asteroids (increase the spawn cap) and compare against the sequential versions. On a 4+ core machine, you should see pair generation drop to roughly half the sequential time. The asteroid update improvement is smaller because `update()` does so little work per asteroid — the parallelism overhead is a larger fraction of the total.
+
+Remove the timing code once you've confirmed the results. It's a debugging tool, not a permanent feature.
+
+---
+
+## Next steps
+
+This completes the asteroid dodger series. Across all 14 tutorials, you've built:
+
+- A complete game loop with keyboard controls and frame-rate-independent physics
+- Collision detection with AABB broad phase and polygon narrow phase
+- Elastic bounce physics with momentum conservation
+- Procedural sound effects and a particle system
+- A weapons system with four weapon types and screen-clearing bombs
+- A settings menu with volume sliders and key rebinding
+- A power-up system and an in-game shop
+- Unit tests for game logic
+- A spatial hash grid for scalable collision detection
+- A camera system, 4000x4000 world, and minimap radar
+- Parallel computation with rayon and an understanding of `Send`/`Sync`
+
+Some directions to explore next:
+
+- **WASM deployment** — macroquad compiles to WebAssembly. Run `cargo build --target wasm32-unknown-unknown` and serve it with a simple HTML page. Your game runs in a browser.
+- **Networked multiplayer** — use WebSockets to synchronize game state between two players sharing the same asteroid field.
+- **ECS architecture** — rewrite the game using [Bevy](https://bevyengine.org/), an entity-component-system engine. The concepts transfer directly: asteroids become entities, position/velocity/radius become components, and update/collision become systems.
+- **Custom shaders** — macroquad supports GLSL shaders. Add a glow effect to bullets, a warp distortion to bomb explosions, or a CRT scanline filter over the whole screen.

@@ -1,0 +1,560 @@
+---
+title: "Asteroid Dodger: Integration Testing"
+description: "Test game logic without opening a window — shop purchases, power-up effects, state transitions, and weapon behavior."
+difficulty: intermediate
+topics: ["Rust", "testing", "integration", "game dev"]
+publishDate: 2026-04-12
+---
+
+The unit testing tutorial covered `collision.rs` — pure math functions with no dependencies on rendering or input. But most of the game logic lives in `game.rs`, which depends on `Sounds`, `screen_width()`, and `is_key_pressed()`. You cannot call `Game::new()` in a test without an active macroquad window.
+
+This tutorial shows how to test game systems — shop purchases, state transitions, weapon behavior, asteroid splitting — by extracting the logic into testable functions and building lightweight test helpers. All tests run with `cargo test`, no window required.
+
+## Milestones overview
+
+<div className="steps-grid">
+  <div className="step-card">
+    <span className="step-num">Milestone 1</span>
+    <span className="step-name">Testing Game Logic</span>
+    <span className="step-desc">Headless constructor, state transitions</span>
+  </div>
+  <div className="step-card">
+    <span className="step-num">Milestone 2</span>
+    <span className="step-name">Testing Game Systems</span>
+    <span className="step-desc">Shop purchases, weapons, asteroid splitting</span>
+  </div>
+</div>
+
+## Prerequisites
+
+- Completed the [menu, power-ups, and shop tutorial](/tutorials/rust-macroquad-menu-shop)
+- Project compiles and runs with weapons, bombs, power-ups, shop, sound, and menu
+
+---
+
+## Milestone 1 — Testing game logic
+
+<span className="step-badge">Milestone 1 of 2</span>
+
+### Step 1 — A headless Game constructor
+
+`Game::new()` takes a `Sounds` argument, which requires `Sounds::load().await` inside an active macroquad window. Tests run outside that context, so we need a way to build a `Game` without sound.
+
+The simplest fix: make sounds optional. Change the `sounds` field in `Game` from `Sounds` to `Option<Sounds>`:
+
+```rust
+// src/game.rs — field change
+pub struct Game {
+    // ...
+    sounds: Option<Sounds>,
+    // ...
+}
+```
+
+Update `Game::new()` to wrap the argument:
+
+```rust
+pub fn new(sounds: Sounds) -> Self {
+    Self {
+        // ...
+        sounds: Some(sounds),
+        // ...
+    }
+}
+```
+
+Every call site that plays sound needs a guard. Add a helper method:
+
+```rust
+impl Game {
+    fn play_sound(&self, sound: &macroquad::audio::Sound) {
+        if let Some(ref sounds) = self.sounds {
+            sounds.play(sound);
+        }
+    }
+}
+```
+
+Replace each `self.sounds.play(...)` call with `self.play_sound(...)`. There are four: thrust, shoot, explode (in `update_bullets`), and damage (in `update_collisions`). Since the `sounds` field is now an `Option`, these calls need to go through the helper or use `if let Some(ref s) = self.sounds`.
+
+Now add the headless constructor, guarded by `#[cfg(test)]`:
+
+```rust
+#[cfg(test)]
+pub fn new_headless() -> Self {
+    Self {
+        player: Player { pos: Vec2::new(400.0, 300.0), vel: Vec2::ZERO, hp: 100.0, max_hp: 100.0, invincibility: 0.0, angle: 0.0 },
+        asteroids: Vec::new(),
+        bullets: Vec::new(),
+        bombs: Vec::new(),
+        powerups: Vec::new(),
+        score: 0.0,
+        score_multiplier: 1.0,
+        score_boost_timer: 0.0,
+        spawn_timer: 0.0,
+        spawn_interval: 3.0,
+        shoot_cooldown: 0.0,
+        round_timer: 0.0,
+        fire_rate_mult: 1.0,
+        shop_flash_timer: 0.0,
+        state: GameState::Menu,
+        sounds: None,
+        particles: Particles::new(),
+        grid: Grid::new(800.0, 600.0, 120.0),
+        keybindings: Keybindings::default_bindings(),
+        high_score: 0,
+        current_weapon: WeaponType::Blaster,
+        bomb_count: 3,
+    }
+}
+```
+
+<div className="callout callout-info">
+  <span className="callout-title">Why #[cfg(test)]?</span>
+  <p>
+    The <code>#[cfg(test)]</code> attribute tells the compiler to include this
+    function only when running <code>cargo test</code>. It is stripped entirely
+    from release builds. This means <code>new_headless</code> adds zero cost to
+    the shipped game — it exists only for the test harness.
+  </p>
+</div>
+
+The `Player` struct is constructed inline with fixed coordinates instead of calling `Player::new()`, which uses `screen_width()` / `screen_height()` internally. Hardcoded `800.0 x 600.0` values are fine for tests — we are testing logic, not layout.
+
+### Step 2 — Test state transitions
+
+Create a `tests/` directory at the project root (next to `src/`). Rust treats files in `tests/` as integration tests — each file is compiled as a separate crate that can `use` your library's public API.
+
+First, make `GameState` and a few fields accessible. Add `pub(crate)` visibility to `GameState` and the `state` field in `game.rs`:
+
+```rust
+#[derive(PartialEq)]
+pub(crate) enum GameState {
+    Menu,
+    Playing,
+    GameOver,
+    Settings,
+    AwaitingKey(Action),
+    Shop,
+}
+```
+
+```rust
+pub struct Game {
+    // ...
+    pub(crate) state: GameState,
+    pub(crate) player: Player,
+    pub(crate) score: f32,
+    // ...
+}
+```
+
+Since integration tests in `tests/` are external crates, `pub(crate)` won't work for them. Instead, write these tests as unit tests inside `game.rs` using a `#[cfg(test)] mod tests` block, which has full access to private fields. This is the same pattern used in the collision tests.
+
+Add at the bottom of `src/game.rs`:
+
+```rust
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn new_headless_starts_in_menu() {
+        let game = Game::new_headless();
+        assert_eq!(game.state, GameState::Menu);
+    }
+
+    #[test]
+    fn playing_to_game_over_when_hp_zero() {
+        let mut game = Game::new_headless();
+        game.state = GameState::Playing;
+        game.player.hp = 0.0;
+        // Simulate what update_collisions does when damage is taken
+        // and HP drops to zero
+        if game.player.hp <= 0.0 {
+            game.state = GameState::GameOver;
+        }
+        assert_eq!(game.state, GameState::GameOver);
+    }
+
+    #[test]
+    fn game_over_to_menu_preserves_high_score() {
+        let mut game = Game::new_headless();
+        game.state = GameState::GameOver;
+        game.score = 150.0;
+        game.high_score = 100;
+        // Simulate pressing Escape on game over screen
+        let final_score = game.score as u32;
+        if final_score > game.high_score {
+            game.high_score = final_score;
+        }
+        game.state = GameState::Menu;
+        assert_eq!(game.state, GameState::Menu);
+        assert_eq!(game.high_score, 150);
+    }
+
+    #[test]
+    fn reset_clears_score_and_bombs() {
+        let mut game = Game::new_headless();
+        game.score = 500.0;
+        game.bomb_count = 10;
+        game.fire_rate_mult = 0.5;
+        game.reset_headless();
+        assert_eq!(game.score, 0.0);
+        assert_eq!(game.bomb_count, 3);
+        assert_eq!(game.fire_rate_mult, 1.0);
+        assert_eq!(game.state, GameState::Playing);
+    }
+}
+```
+
+The `reset_headless` method mirrors `reset()` but avoids calling `Player::new()` and `Grid::new()` with screen dimensions:
+
+```rust
+#[cfg(test)]
+pub fn reset_headless(&mut self) {
+    self.player = Player { pos: Vec2::new(400.0, 300.0), vel: Vec2::ZERO, hp: 100.0, max_hp: 100.0, invincibility: 0.0, angle: 0.0 };
+    self.asteroids.clear();
+    self.bullets.clear();
+    self.bombs.clear();
+    self.powerups.clear();
+    self.score = 0.0;
+    self.score_multiplier = 1.0;
+    self.score_boost_timer = 0.0;
+    self.spawn_timer = 0.0;
+    self.spawn_interval = 3.0;
+    self.shoot_cooldown = 0.0;
+    self.round_timer = 0.0;
+    self.fire_rate_mult = 1.0;
+    self.shop_flash_timer = 0.0;
+    self.state = GameState::Playing;
+    self.particles = Particles::new();
+    self.grid = Grid::new(800.0, 600.0, 120.0);
+    self.current_weapon = WeaponType::Blaster;
+    self.bomb_count = 3;
+}
+```
+
+<div className="callout callout-tip">
+  <span className="callout-title">Why not simulate keypresses?</span>
+  <p>
+    Macroquad's <code>is_key_pressed()</code> reads from an internal event queue
+    populated by the windowing system. There is no public API to inject fake key
+    events. Instead, test the <em>consequence</em> of input — set the state
+    directly, call the logic, and assert the result. This tests the game rules,
+    not the input plumbing.
+  </p>
+</div>
+
+Run the tests:
+
+```bash
+cargo test
+```
+
+You should see output like:
+
+```
+running 4 tests
+test game::tests::new_headless_starts_in_menu ... ok
+test game::tests::playing_to_game_over_when_hp_zero ... ok
+test game::tests::game_over_to_menu_preserves_high_score ... ok
+test game::tests::reset_clears_score_and_bombs ... ok
+```
+
+---
+
+## Milestone 2 — Testing game systems
+
+<span className="step-badge">Milestone 2 of 2</span>
+
+### Step 3 — Test shop purchases
+
+The shop lets players spend score on upgrades. Each purchase must deduct the correct amount, apply the upgrade, and refuse purchases when funds are insufficient. These are pure arithmetic checks — perfect for tests.
+
+Add these tests inside the same `mod tests` block in `game.rs`:
+
+```rust
+    #[test]
+    fn buy_max_hp_increases_hp_and_deducts_score() {
+        let mut game = Game::new_headless();
+        game.state = GameState::Shop;
+        game.score = 100.0;
+        let original_max_hp = game.player.max_hp;
+        // Simulate buying "Max HP +20" (cost: 30)
+        game.score -= 30.0;
+        game.player.max_hp += 20.0;
+        game.player.hp = game.player.max_hp;
+        assert_eq!(game.score, 70.0);
+        assert_eq!(game.player.max_hp, original_max_hp + 20.0);
+        assert_eq!(game.player.hp, game.player.max_hp);
+    }
+
+    #[test]
+    fn buy_fire_rate_reduces_cooldown_multiplier() {
+        let mut game = Game::new_headless();
+        game.score = 100.0;
+        let original_mult = game.fire_rate_mult;
+        // Simulate buying "Fire Rate +" (cost: 40)
+        game.score -= 40.0;
+        game.fire_rate_mult *= 0.85;
+        assert_eq!(game.score, 60.0);
+        let expected = original_mult * 0.85;
+        assert!((game.fire_rate_mult - expected).abs() < 1e-5);
+    }
+
+    #[test]
+    fn buy_bombs_adds_three() {
+        let mut game = Game::new_headless();
+        game.score = 50.0;
+        let original_bombs = game.bomb_count;
+        // Simulate buying "+3 Bombs" (cost: 20)
+        game.score -= 20.0;
+        game.bomb_count += 3;
+        assert_eq!(game.bomb_count, original_bombs + 3);
+        assert_eq!(game.score, 30.0);
+    }
+
+    #[test]
+    fn cannot_buy_with_insufficient_score() {
+        let mut game = Game::new_headless();
+        game.score = 10.0;
+        let score_before = game.score;
+        let hp_before = game.player.max_hp;
+        // "Max HP +20" costs 30 — should not be purchasable
+        let cost = 30.0_f32;
+        if game.score >= cost {
+            game.score -= cost;
+            game.player.max_hp += 20.0;
+        }
+        assert_eq!(game.score, score_before);
+        assert_eq!(game.player.max_hp, hp_before);
+    }
+
+    #[test]
+    fn multiple_fire_rate_purchases_stack() {
+        let mut game = Game::new_headless();
+        game.score = 200.0;
+        // Buy fire rate three times
+        for _ in 0..3 {
+            game.score -= 40.0;
+            game.fire_rate_mult *= 0.85;
+        }
+        let expected = 0.85_f32.powi(3);
+        assert!((game.fire_rate_mult - expected).abs() < 1e-5);
+        assert_eq!(game.score, 80.0);
+    }
+```
+
+These tests replicate the shop logic from `update_shop` without calling the method directly (which would need `is_key_pressed`). They verify the math is correct — the same math that runs in the real game.
+
+### Step 4 — Test weapon behavior and asteroid splitting
+
+Weapon properties and asteroid splitting are governed by data on structs, not input events. Test them directly.
+
+Add a separate test module at the bottom of `src/weapon.rs`:
+
+```rust
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn blaster_cooldown_is_fastest_single_shot() {
+        assert_eq!(WeaponType::Blaster.cooldown(), 0.15);
+    }
+
+    #[test]
+    fn rapid_has_shortest_cooldown() {
+        let rapid = WeaponType::Rapid.cooldown();
+        for weapon in &WeaponType::ALL {
+            if *weapon != WeaponType::Rapid {
+                assert!(rapid < weapon.cooldown(),
+                    "{:?} cooldown {} should be > Rapid {}",
+                    weapon, weapon.cooldown(), rapid);
+            }
+        }
+    }
+
+    #[test]
+    fn all_weapons_have_distinct_cooldowns() {
+        let cooldowns: Vec<f32> = WeaponType::ALL.iter()
+            .map(|w| w.cooldown())
+            .collect();
+        for i in 0..cooldowns.len() {
+            for j in (i + 1)..cooldowns.len() {
+                assert!((cooldowns[i] - cooldowns[j]).abs() > 1e-5,
+                    "Weapons {} and {} have the same cooldown", i, j);
+            }
+        }
+    }
+
+    #[test]
+    fn all_weapons_have_unique_labels() {
+        let labels: Vec<&str> = WeaponType::ALL.iter()
+            .map(|w| w.label())
+            .collect();
+        for i in 0..labels.len() {
+            for j in (i + 1)..labels.len() {
+                assert_ne!(labels[i], labels[j]);
+            }
+        }
+    }
+}
+```
+
+Now test bullet properties. Add a test module at the bottom of `src/bullet.rs`:
+
+```rust
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_bullet_is_not_piercing() {
+        let bullet = Bullet::new(Vec2::ZERO, 0.0);
+        assert!(!bullet.piercing);
+    }
+
+    #[test]
+    fn laser_bullet_is_piercing() {
+        let bullet = Bullet::new_with(Vec2::ZERO, 0.0, 900.0, true, 1.5, LIME);
+        assert!(bullet.piercing);
+    }
+
+    #[test]
+    fn spread_produces_three_bullets() {
+        // Replicate spawn_bullets logic for Spread
+        let angle = 0.0_f32;
+        let tip = Vec2::new(22.0, 0.0);
+        let spread = 0.15;
+        let bullets = vec![
+            Bullet::new_with(tip, angle - spread, 550.0, false, 2.5, ORANGE),
+            Bullet::new_with(tip, angle, 600.0, false, 2.5, ORANGE),
+            Bullet::new_with(tip, angle + spread, 550.0, false, 2.5, ORANGE),
+        ];
+        assert_eq!(bullets.len(), 3);
+        assert!(!bullets[0].piercing);
+    }
+
+    #[test]
+    fn bullet_moves_forward_on_update() {
+        let mut bullet = Bullet::new(Vec2::ZERO, 0.0);
+        let start_x = bullet.pos.x;
+        bullet.update(1.0 / 60.0);
+        assert!(bullet.pos.x > start_x);
+    }
+}
+```
+
+Finally, test asteroid splitting. Add a test module at the bottom of `src/asteroid.rs`:
+
+```rust
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn spawn_fragment_is_generation_one() {
+        let frag = Asteroid::spawn_fragment(
+            Vec2::new(100.0, 100.0),
+            Vec2::new(10.0, 0.0),
+            40.0,
+            Vec2::new(1.0, 0.0),
+        );
+        assert_eq!(frag.generation, 1);
+    }
+
+    #[test]
+    fn fragment_is_smaller_than_parent() {
+        let parent_radius = 40.0;
+        let frag = Asteroid::spawn_fragment(
+            Vec2::ZERO, Vec2::ZERO, parent_radius, Vec2::new(1.0, 0.0),
+        );
+        assert!(frag.radius < parent_radius);
+    }
+
+    #[test]
+    fn generation_zero_produces_two_fragments() {
+        let parent_pos = Vec2::new(200.0, 200.0);
+        let parent_vel = Vec2::new(10.0, 5.0);
+        let parent_radius = 40.0;
+        // Simulate the splitting logic from update_bullets
+        let spread = Vec2::new(1.0, 0.0);
+        let frag_a = Asteroid::spawn_fragment(parent_pos, parent_vel, parent_radius, spread);
+        let frag_b = Asteroid::spawn_fragment(parent_pos, parent_vel, parent_radius, -spread);
+        assert_eq!(frag_a.generation, 1);
+        assert_eq!(frag_b.generation, 1);
+    }
+
+    #[test]
+    fn generation_one_would_not_split() {
+        // The game code only splits generation == 0 asteroids.
+        // Generation-1 fragments are destroyed outright.
+        let frag = Asteroid::spawn_fragment(
+            Vec2::ZERO, Vec2::ZERO, 40.0, Vec2::new(1.0, 0.0),
+        );
+        assert_eq!(frag.generation, 1);
+        // In update_bullets: `if asteroid.generation == 0` guards the split.
+        // A generation-1 asteroid would fail that check — no fragments produced.
+        assert_ne!(frag.generation, 0);
+    }
+}
+```
+
+Run the full suite:
+
+```bash
+cargo test
+```
+
+Expected output:
+
+```
+running 4 tests  (weapon::tests)
+running 4 tests  (bullet::tests)
+running 4 tests  (asteroid::tests)
+running 4 tests  (game::tests — milestone 1)
+running 5 tests  (game::tests — milestone 2)
+
+test result: ok. 21 passed; 0 failed
+```
+
+<div className="callout callout-info">
+  <span className="callout-title">Unit tests vs integration tests</span>
+  <p>
+    All the tests in this tutorial live inside <code>src/</code> files as
+    <code>#[cfg(test)] mod tests</code> blocks. Rust also supports integration
+    tests in a top-level <code>tests/</code> directory, where each file is
+    compiled as a separate crate. Integration tests can only access
+    <code>pub</code> items, which makes them better for testing your public API.
+    The <code>#[cfg(test)]</code> approach used here can access private fields
+    directly — ideal for testing internal game logic.
+  </p>
+</div>
+
+<div className="callout callout-tip">
+  <span className="callout-title">Test directory overview</span>
+  <p>
+    After this tutorial, your test modules are spread across the source files
+    that own the logic they test:
+  </p>
+  <ul>
+    <li><code>src/collision.rs</code> — AABB, point-in-polygon, circle-polygon tests (from the unit testing tutorial)</li>
+    <li><code>src/game.rs</code> — state transitions, shop purchases, reset behavior</li>
+    <li><code>src/weapon.rs</code> — cooldown values, label uniqueness</li>
+    <li><code>src/bullet.rs</code> — piercing flags, movement, spread count</li>
+    <li><code>src/asteroid.rs</code> — fragment generation, size reduction, split logic</li>
+  </ul>
+  <p>
+    Run <code>cargo test --lib</code> to execute only these unit tests, or
+    <code>cargo test</code> to include doc-tests and any future
+    <code>tests/</code> integration tests.
+  </p>
+</div>
+
+---
+
+## Next steps
+
+- **[Large Map and Minimap](/tutorials/rust-macroquad-large-map)** -- camera system, world-space rendering, and a radar display

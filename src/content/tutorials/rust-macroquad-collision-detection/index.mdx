@@ -1,0 +1,795 @@
+---
+title: "Asteroid Dodger: Collision Detection"
+description: "Add AABB and polygon collision detection, an HP bar with invincibility frames, and a complete game over loop to your Rust asteroid dodger."
+difficulty: intermediate
+topics: ["Rust", "macroquad", "game dev", "collision detection"]
+publishDate: 2026-04-12
+---
+
+This tutorial picks up where [Build an Asteroid Dodger](/tutorials/rust-macroquad-asteroid-dodger) left off. You have a ship flying through a field of drifting asteroids — but nothing collides. By the end of this tutorial, asteroids will damage the ship, the ship will have an HP bar with invincibility frames, and the game will have a proper game-over-and-restart loop.
+
+## What you'll add
+
+- Two-phase collision detection (AABB broad phase → polygon narrow phase)
+- HP bar with invincibility frames
+- Game over and restart
+- Positional correction so the ship can't clip through asteroids
+
+## Milestones overview
+
+<div className="steps-grid">
+  <div className="step-card">
+    <span className="step-num">Milestone 1</span>
+    <span className="step-name">Collision Primitives</span>
+    <span className="step-desc">Aabb struct and collision module</span>
+  </div>
+  <div className="step-card">
+    <span className="step-num">Milestone 2</span>
+    <span className="step-name">Collision & Damage</span>
+    <span className="step-desc">Broad phase, narrow phase, HP bar</span>
+  </div>
+  <div className="step-card">
+    <span className="step-num">Milestone 3</span>
+    <span className="step-name">Game Loop</span>
+    <span className="step-desc">Game over, restart, exact polygon collision</span>
+  </div>
+</div>
+
+## Prerequisites
+
+- Completed the [base Asteroid Dodger tutorial](/tutorials/rust-macroquad-asteroid-dodger)
+- Project compiles and runs with ship + asteroids
+
+---
+
+## Milestone 1 — Collision primitives
+
+<span className="step-badge">Milestone 1 of 3</span>
+
+### Step 1 — Create `src/collision.rs`
+
+The collision module holds geometry helpers that multiple other modules will use. Create the file and register it in `main.rs`:
+
+```rust
+mod collision;
+```
+
+An **axis-aligned bounding box** is a rectangle whose edges always run parallel to the screen axes — the cheapest possible overlap test.
+
+```rust
+// src/collision.rs
+use macroquad::prelude::Vec2;
+
+pub struct Aabb {
+    pub min: Vec2,
+    pub max: Vec2,
+}
+
+impl Aabb {
+    pub fn from_center_radius(center: Vec2, radius: f32) -> Self {
+        Self {
+            min: center - Vec2::splat(radius),
+            max: center + Vec2::splat(radius),
+        }
+    }
+
+    pub fn overlaps(&self, other: &Aabb) -> bool {
+        self.min.x <= other.max.x && self.max.x >= other.min.x
+            && self.min.y <= other.max.y && self.max.y >= other.min.y
+    }
+}
+```
+
+`Vec2::splat(r)` creates `Vec2::new(r, r)` — a uniform value in both dimensions.
+
+<div className="callout callout-info">
+  <span className="callout-title">pub on fields</span>
+  <p>
+    <code>pub struct Aabb</code> makes the type visible, but Rust independently controls
+    field visibility. Without <code>pub</code> on <code>min</code> and <code>max</code>,
+    other modules could see the type but couldn't read its fields.
+  </p>
+</div>
+
+### Step 2 — Add Aabb to player and asteroid
+
+**`src/player.rs`** — add an Aabb import and a constant for the player's collision radius, plus HP and invincibility fields:
+
+```rust
+use crate::collision::Aabb;
+
+pub const PLAYER_RADIUS: f32 = 16.0;
+```
+
+Add `hp` and `invincibility` fields to the `Player` struct:
+
+```rust
+pub struct Player {
+    pub pos: Vec2,
+    pub vel: Vec2,
+    pub hp: f32,
+    pub invincibility: f32,
+    angle: f32,
+}
+```
+
+Update `new()` to initialise them:
+
+```rust
+hp: 100.0,
+invincibility: 0.0,
+```
+
+Add an `aabb` method to `impl Player`:
+
+```rust
+pub fn aabb(&self) -> Aabb {
+    Aabb::from_center_radius(self.pos, PLAYER_RADIUS)
+}
+```
+
+Add invincibility countdown at the end of `update`:
+
+```rust
+if self.invincibility > 0.0 {
+    self.invincibility -= dt;
+}
+```
+
+Update `draw` to flash during invincibility — add this at the top of the method:
+
+```rust
+pub fn draw(&self) {
+    // Skip every other 1/8 second while invincible
+    if self.invincibility > 0.0 && (self.invincibility * 8.0) as u32 % 2 == 0 {
+        return;
+    }
+    // ... triangle code unchanged
+}
+```
+
+**`src/asteroid.rs`** — add an Aabb method that fits tightly around the actual vertices rather than using the base radius:
+
+```rust
+use crate::collision::Aabb;
+```
+
+```rust
+pub fn aabb(&self) -> Aabb {
+    let mut min = Vec2::splat(f32::MAX);
+    let mut max = Vec2::splat(f32::MIN);
+    for v in &self.vertices {
+        let world = self.pos + *v;
+        min = min.min(world);
+        max = max.max(world);
+    }
+    Aabb { min, max }
+}
+```
+
+<div className="callout callout-tip">
+  <span className="callout-title">Run it</span>
+  <p>
+    <code>cargo run</code> — no visible change yet, but the project compiles with the
+    new collision module and Aabb methods in place.
+  </p>
+</div>
+
+---
+
+## Milestone 2 — Collision and damage
+
+<span className="step-badge">Milestone 2 of 3</span>
+
+### Step 3 — Broad-phase collision: bounding boxes
+
+Real-time collision runs in two phases. The **broad phase** quickly rejects pairs using cheap AABB tests. The **narrow phase** runs the expensive exact check only on survivors.
+
+Add to `src/game.rs`:
+
+```rust
+use crate::player::PLAYER_RADIUS;
+use crate::collision;
+```
+
+Add a `state` field and an `update_collisions` method. First add a `GameState` enum and expand the `Game` struct:
+
+```rust
+#[derive(PartialEq)]
+enum GameState {
+    Playing,
+    GameOver,
+}
+
+pub struct Game {
+    player: Player,
+    asteroids: Vec<Asteroid>,
+    score: f32,
+    spawn_timer: f32,
+    spawn_interval: f32,
+    state: GameState,
+}
+
+// In new():
+state: GameState::Playing,
+```
+
+Add `update_collisions` and call it from `update`:
+
+```rust
+fn update_collisions(&mut self) {
+    let player_aabb = self.player.aabb();
+
+    // Copy player values before the loop.
+    // The loop mutably borrows self.asteroids, and the borrow checker
+    // prevents borrowing self.player at the same time — both are fields
+    // of self. Copying into locals sidesteps the conflict; we write back
+    // after the loop ends.
+    let mut player_pos = self.player.pos;
+    let player_invincible = self.player.invincibility > 0.0;
+    let mut took_damage = false;
+
+    for asteroid in &mut self.asteroids {
+        if !player_aabb.overlaps(&asteroid.aabb()) {
+            continue; // broad phase: skip non-overlapping pairs
+        }
+
+        // Treat the asteroid as a circle at 75% radius — places the hitbox
+        // inside the visual shape so collisions feel fair, not cheap
+        let hit_radius = asteroid.radius * 0.75;
+        if player_pos.distance(asteroid.pos) >= PLAYER_RADIUS + hit_radius {
+            continue;
+        }
+
+        if !player_invincible {
+            took_damage = true;
+        }
+    }
+
+    self.player.pos = player_pos;
+
+    if took_damage {
+        self.player.hp -= 20.0;
+        self.player.invincibility = 1.5;
+        if self.player.hp <= 0.0 {
+            self.state = GameState::GameOver;
+        }
+    }
+}
+```
+
+Add the call at the end of `update`:
+
+```rust
+self.asteroids.retain(|a| !a.is_off_screen());
+self.update_collisions();
+```
+
+### Step 4 — HP bar
+
+Add the HP bar to `Game::draw`, after the existing `draw_text` score line:
+
+```rust
+draw_rectangle(20.0, 36.0, 200.0, 16.0, DARKGRAY);
+let fill_width = 200.0 * (self.player.hp / 100.0).clamp(0.0, 1.0);
+let bar_color = if self.player.hp > 60.0 { GREEN }
+                else if self.player.hp > 30.0 { YELLOW }
+                else { RED };
+draw_rectangle(20.0, 36.0, fill_width, 16.0, bar_color);
+draw_rectangle_lines(20.0, 36.0, 200.0, 16.0, 1.5, WHITE);
+```
+
+`draw_rectangle_lines` takes a line-thickness argument that `draw_rectangle` doesn't: `(x, y, w, h, thickness, color)` — six arguments instead of five. The `1.5` here draws a 1.5-pixel border around the bar.
+
+<div className="callout callout-tip">
+  <span className="callout-title">Run it</span>
+  <p>
+    <code>cargo run</code> — fly into asteroids and watch the HP bar shrink. The ship
+    blinks during the invincibility window after each hit.
+  </p>
+</div>
+
+---
+
+## Milestone 3 — Complete game loop
+
+<span className="step-badge">Milestone 3 of 3</span>
+
+### Step 5 — Game over and restart
+
+Add the game-over guard at the top of `update`:
+
+```rust
+pub fn update(&mut self, dt: f32) {
+    if self.state == GameState::GameOver {
+        if is_key_pressed(KeyCode::R) { *self = Game::new(); }
+        return;
+    }
+    // ... rest of update unchanged
+}
+```
+
+`*self = Game::new()` resets the game in one line. `self` is `&mut Game` — a mutable reference to the current `Game`. Dereferencing it with `*self` gives the `Game` value itself, which you can then overwrite with a freshly constructed one. All fields reset atomically.
+
+Add the overlay to `draw`:
+
+```rust
+if self.state == GameState::GameOver {
+    let msg = format!("Game Over — Score: {}", self.score as u32);
+    draw_text(&msg, screen_width() / 2.0 - 180.0, screen_height() / 2.0, 40.0, WHITE);
+    draw_text("Press R to restart", screen_width() / 2.0 - 110.0, screen_height() / 2.0 + 50.0, 24.0, GRAY);
+}
+```
+
+### Step 6 — Exact polygon-circle collision
+
+The circle approximation from Step 3 works but isn't precise. Append these three functions to `src/collision.rs` for exact edge-distance testing:
+
+```rust
+pub fn closest_point_on_segment(a: Vec2, b: Vec2, p: Vec2) -> Vec2 {
+    let ab = b - a;
+    let t = ((p - a).dot(ab) / ab.length_squared()).clamp(0.0, 1.0);
+    a + ab * t
+}
+
+pub fn point_in_polygon(point: Vec2, poly_pos: Vec2, vertices: &[Vec2]) -> bool {
+    let n = vertices.len();
+    let mut inside = false;
+    let mut j = n - 1;
+    for i in 0..n {
+        let vi = poly_pos + vertices[i];
+        let vj = poly_pos + vertices[j];
+        if (vi.y > point.y) != (vj.y > point.y)
+            && point.x < (vj.x - vi.x) * (point.y - vi.y) / (vj.y - vi.y) + vi.x
+        {
+            inside = !inside;
+        }
+        j = i;
+    }
+    inside
+}
+
+pub fn circle_hits_polygon(
+    center: Vec2,
+    radius: f32,
+    poly_pos: Vec2,
+    vertices: &[Vec2],
+) -> bool {
+    let n = vertices.len();
+    for i in 0..n {
+        let a = poly_pos + vertices[i];
+        let b = poly_pos + vertices[(i + 1) % n];
+        if center.distance(closest_point_on_segment(a, b, center)) < radius {
+            return true;
+        }
+    }
+    point_in_polygon(center, poly_pos, vertices)
+}
+```
+
+These take `poly_pos` and `vertices: &[Vec2]` as separate arguments so `collision.rs` stays independent of `asteroid.rs` — if it imported `Asteroid`, those two modules would circularly depend on each other.
+
+In `update_collisions` in `src/game.rs`, replace the circle approximation:
+
+```rust
+// Remove:
+let hit_radius = asteroid.radius * 0.75;
+if player_pos.distance(asteroid.pos) >= PLAYER_RADIUS + hit_radius { continue; }
+
+// Replace with:
+if !collision::circle_hits_polygon(
+    player_pos, PLAYER_RADIUS, asteroid.pos, &asteroid.vertices,
+) { continue; }
+```
+
+### Step 7 — Stop the ship clipping through asteroids
+
+The ship still passes through asteroids on contact. Add positional correction — push the ship out whenever it overlaps.
+
+Inside the collision-passing branch, before the damage check:
+
+```rust
+// Push player fully out of the asteroid
+let normal = (player_pos - asteroid.pos).normalize_or_zero();
+let overlap = PLAYER_RADIUS + asteroid.radius - player_pos.distance(asteroid.pos);
+if overlap > 0.0 {
+    player_pos += normal * overlap;
+}
+```
+
+This stops clipping. The ship doesn't yet bounce away — that comes in the [Physics tutorial](/tutorials/rust-macroquad-physics).
+
+<div className="callout callout-tip">
+  <span className="callout-title">Run it</span>
+  <p>
+    <code>cargo run</code> — the game now has a full loop: play, get pushed around by
+    asteroids, die, press R to restart. The ship stops at asteroid surfaces rather than
+    passing through them.
+  </p>
+</div>
+
+---
+
+## Complete listing
+
+The project now has five source files:
+
+```
+src/
+├── main.rs
+├── collision.rs
+├── player.rs
+├── asteroid.rs
+└── game.rs
+```
+
+**`src/main.rs`**
+
+```rust
+use macroquad::prelude::*;
+
+mod collision;
+mod player;
+mod asteroid;
+mod game;
+
+use game::Game;
+
+#[macroquad::main("Asteroid Dodger")]
+async fn main() {
+    let mut game = Game::new();
+    loop {
+        game.update(get_frame_time());
+        game.draw();
+        next_frame().await;
+    }
+}
+```
+
+**`src/collision.rs`**
+
+```rust
+use macroquad::prelude::Vec2;
+
+pub struct Aabb {
+    pub min: Vec2,
+    pub max: Vec2,
+}
+
+impl Aabb {
+    pub fn from_center_radius(center: Vec2, radius: f32) -> Self {
+        Self {
+            min: center - Vec2::splat(radius),
+            max: center + Vec2::splat(radius),
+        }
+    }
+
+    pub fn overlaps(&self, other: &Aabb) -> bool {
+        self.min.x <= other.max.x && self.max.x >= other.min.x
+            && self.min.y <= other.max.y && self.max.y >= other.min.y
+    }
+}
+
+pub fn closest_point_on_segment(a: Vec2, b: Vec2, p: Vec2) -> Vec2 {
+    let ab = b - a;
+    let t = ((p - a).dot(ab) / ab.length_squared()).clamp(0.0, 1.0);
+    a + ab * t
+}
+
+pub fn point_in_polygon(point: Vec2, poly_pos: Vec2, vertices: &[Vec2]) -> bool {
+    let n = vertices.len();
+    let mut inside = false;
+    let mut j = n - 1;
+    for i in 0..n {
+        let vi = poly_pos + vertices[i];
+        let vj = poly_pos + vertices[j];
+        if (vi.y > point.y) != (vj.y > point.y)
+            && point.x < (vj.x - vi.x) * (point.y - vi.y) / (vj.y - vi.y) + vi.x
+        {
+            inside = !inside;
+        }
+        j = i;
+    }
+    inside
+}
+
+pub fn circle_hits_polygon(
+    center: Vec2,
+    radius: f32,
+    poly_pos: Vec2,
+    vertices: &[Vec2],
+) -> bool {
+    let n = vertices.len();
+    for i in 0..n {
+        let a = poly_pos + vertices[i];
+        let b = poly_pos + vertices[(i + 1) % n];
+        if center.distance(closest_point_on_segment(a, b, center)) < radius {
+            return true;
+        }
+    }
+    point_in_polygon(center, poly_pos, vertices)
+}
+```
+
+**`src/player.rs`**
+
+```rust
+use macroquad::prelude::*;
+use crate::collision::Aabb;
+
+pub const PLAYER_RADIUS: f32 = 16.0;
+
+const THRUST: f32 = 300.0;
+const DRAG: f32 = 1.8;
+const ROTATE_SPEED: f32 = 3.0;
+const MAX_SPEED: f32 = 420.0;
+
+pub struct Player {
+    pub pos: Vec2,
+    pub vel: Vec2,
+    pub hp: f32,
+    pub invincibility: f32,
+    angle: f32,
+}
+
+impl Player {
+    pub fn new() -> Self {
+        Self {
+            pos: Vec2::new(screen_width() / 2.0, screen_height() / 2.0),
+            vel: Vec2::ZERO,
+            hp: 100.0,
+            invincibility: 0.0,
+            angle: -std::f32::consts::FRAC_PI_2,
+        }
+    }
+
+    pub fn update(&mut self, dt: f32) {
+        if is_key_down(KeyCode::A) { self.angle -= ROTATE_SPEED * dt; }
+        if is_key_down(KeyCode::D) { self.angle += ROTATE_SPEED * dt; }
+
+        if is_key_down(KeyCode::W) {
+            self.vel += Vec2::from_angle(self.angle) * THRUST * dt;
+        }
+
+        self.vel *= 1.0 - DRAG * dt;
+        if self.vel.length() > MAX_SPEED {
+            self.vel = self.vel.normalize() * MAX_SPEED;
+        }
+
+        self.pos += self.vel * dt;
+
+        let (sw, sh) = (screen_width(), screen_height());
+        if self.pos.x < 0.0 { self.pos.x += sw; }
+        if self.pos.x > sw  { self.pos.x -= sw; }
+        if self.pos.y < 0.0 { self.pos.y += sh; }
+        if self.pos.y > sh  { self.pos.y -= sh; }
+
+        if self.invincibility > 0.0 {
+            self.invincibility -= dt;
+        }
+    }
+
+    pub fn aabb(&self) -> Aabb {
+        Aabb::from_center_radius(self.pos, PLAYER_RADIUS)
+    }
+
+    pub fn draw(&self) {
+        if self.invincibility > 0.0 && (self.invincibility * 8.0) as u32 % 2 == 0 {
+            return;
+        }
+        let forward = Vec2::from_angle(self.angle);
+        let side = Vec2::new(-forward.y, forward.x);
+        draw_triangle(
+            self.pos + forward * 20.0,
+            self.pos - forward * 10.0 + side * 12.0,
+            self.pos - forward * 10.0 - side * 12.0,
+            WHITE,
+        );
+    }
+}
+```
+
+**`src/asteroid.rs`**
+
+```rust
+use macroquad::prelude::*;
+use crate::collision::Aabb;
+
+pub struct Asteroid {
+    pub pos: Vec2,
+    pub vel: Vec2,
+    pub radius: f32,
+    pub vertices: Vec<Vec2>,
+}
+
+impl Asteroid {
+    pub fn spawn() -> Self {
+        let (sw, sh) = (screen_width(), screen_height());
+        let pos = match rand::gen_range(0u32, 4) {
+            0 => Vec2::new(rand::gen_range(0.0, sw), -60.0),
+            1 => Vec2::new(sw + 60.0, rand::gen_range(0.0, sh)),
+            2 => Vec2::new(rand::gen_range(0.0, sw), sh + 60.0),
+            _ => Vec2::new(-60.0, rand::gen_range(0.0, sh)),
+        };
+        let target = Vec2::new(
+            sw / 2.0 + rand::gen_range(-150.0f32, 150.0),
+            sh / 2.0 + rand::gen_range(-150.0f32, 150.0),
+        );
+        let dir    = (target - pos).normalize_or_zero();
+        let speed  = rand::gen_range(60.0f32, 160.0);
+        let radius = rand::gen_range(20.0f32, 50.0);
+        let n      = rand::gen_range(7u32, 13) as usize;
+        let vertices = (0..n)
+            .map(|i| {
+                let angle = (i as f32 / n as f32) * std::f32::consts::TAU;
+                let r = radius * rand::gen_range(0.7f32, 1.3);
+                Vec2::from_angle(angle) * r
+            })
+            .collect();
+        Asteroid { pos, vel: dir * speed, radius, vertices }
+    }
+
+    pub fn update(&mut self, dt: f32) {
+        self.pos += self.vel * dt;
+    }
+
+    pub fn is_off_screen(&self) -> bool {
+        let margin = 200.0;
+        let (sw, sh) = (screen_width(), screen_height());
+        self.pos.x < -margin || self.pos.x > sw + margin
+            || self.pos.y < -margin || self.pos.y > sh + margin
+    }
+
+    pub fn aabb(&self) -> Aabb {
+        let mut min = Vec2::splat(f32::MAX);
+        let mut max = Vec2::splat(f32::MIN);
+        for v in &self.vertices {
+            let world = self.pos + *v;
+            min = min.min(world);
+            max = max.max(world);
+        }
+        Aabb { min, max }
+    }
+
+    pub fn draw(&self) {
+        let n = self.vertices.len();
+        for i in 0..n {
+            let a = self.pos + self.vertices[i];
+            let b = self.pos + self.vertices[(i + 1) % n];
+            draw_triangle(self.pos, a, b, GRAY);
+            draw_line(a.x, a.y, b.x, b.y, 1.5, LIGHTGRAY);
+        }
+    }
+}
+```
+
+**`src/game.rs`**
+
+```rust
+use macroquad::prelude::*;
+use crate::player::{Player, PLAYER_RADIUS};
+use crate::asteroid::Asteroid;
+use crate::collision;
+
+#[derive(PartialEq)]
+enum GameState {
+    Playing,
+    GameOver,
+}
+
+pub struct Game {
+    player: Player,
+    asteroids: Vec<Asteroid>,
+    score: f32,
+    spawn_timer: f32,
+    spawn_interval: f32,
+    state: GameState,
+}
+
+impl Game {
+    pub fn new() -> Self {
+        Self {
+            player: Player::new(),
+            asteroids: Vec::new(),
+            score: 0.0,
+            spawn_timer: 0.0,
+            spawn_interval: 3.0,
+            state: GameState::Playing,
+        }
+    }
+
+    pub fn update(&mut self, dt: f32) {
+        if self.state == GameState::GameOver {
+            if is_key_pressed(KeyCode::R) { *self = Game::new(); }
+            return;
+        }
+
+        self.player.update(dt);
+        self.score += dt;
+
+        self.spawn_timer += dt;
+        if self.spawn_timer >= self.spawn_interval {
+            self.spawn_timer = 0.0;
+            self.asteroids.push(Asteroid::spawn());
+            self.spawn_interval = (self.spawn_interval - 0.15).max(0.6);
+        }
+
+        for asteroid in &mut self.asteroids {
+            asteroid.update(dt);
+        }
+
+        self.asteroids.retain(|a| !a.is_off_screen());
+        self.update_collisions();
+    }
+
+    fn update_collisions(&mut self) {
+        let player_aabb = self.player.aabb();
+        let mut player_pos = self.player.pos;
+        let player_invincible = self.player.invincibility > 0.0;
+        let mut took_damage = false;
+
+        for asteroid in &mut self.asteroids {
+            if !player_aabb.overlaps(&asteroid.aabb()) { continue; }
+            if !collision::circle_hits_polygon(
+                player_pos, PLAYER_RADIUS, asteroid.pos, &asteroid.vertices,
+            ) { continue; }
+
+            // Push player fully out of the asteroid
+            let normal = (player_pos - asteroid.pos).normalize_or_zero();
+            let overlap = PLAYER_RADIUS + asteroid.radius - player_pos.distance(asteroid.pos);
+            if overlap > 0.0 {
+                player_pos += normal * overlap;
+            }
+
+            if !player_invincible {
+                took_damage = true;
+            }
+        }
+
+        self.player.pos = player_pos;
+
+        if took_damage {
+            self.player.hp -= 20.0;
+            self.player.invincibility = 1.5;
+            if self.player.hp <= 0.0 {
+                self.state = GameState::GameOver;
+            }
+        }
+    }
+
+    pub fn draw(&self) {
+        clear_background(BLACK);
+
+        draw_text(
+            &format!("FPS: {}", get_fps()),
+            screen_width() - 90.0, 24.0, 20.0, DARKGREEN,
+        );
+
+        for asteroid in &self.asteroids {
+            asteroid.draw();
+        }
+        self.player.draw();
+
+        draw_text(&format!("Score: {}", self.score as u32), 20.0, 24.0, 24.0, WHITE);
+
+        draw_rectangle(20.0, 36.0, 200.0, 16.0, DARKGRAY);
+        let fill_width = 200.0 * (self.player.hp / 100.0).clamp(0.0, 1.0);
+        let bar_color = if self.player.hp > 60.0 { GREEN }
+                        else if self.player.hp > 30.0 { YELLOW }
+                        else { RED };
+        draw_rectangle(20.0, 36.0, fill_width, 16.0, bar_color);
+        draw_rectangle_lines(20.0, 36.0, 200.0, 16.0, 1.5, WHITE);
+
+        if self.state == GameState::GameOver {
+            let msg = format!("Game Over — Score: {}", self.score as u32);
+            draw_text(&msg, screen_width() / 2.0 - 180.0, screen_height() / 2.0, 40.0, WHITE);
+            draw_text("Press R to restart", screen_width() / 2.0 - 110.0, screen_height() / 2.0 + 50.0, 24.0, GRAY);
+        }
+    }
+}
+```
+
+## Next steps
+
+- **[Unit Testing](/tutorials/rust-macroquad-unit-testing)** — test collision helpers and game logic with `#[cfg(test)]`
+- **[Shooting and Destruction](/tutorials/rust-macroquad-shooting-destruction)** — add bullets, hit detection, and asteroid splitting

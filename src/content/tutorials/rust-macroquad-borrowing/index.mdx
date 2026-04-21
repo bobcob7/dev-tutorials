@@ -1,0 +1,302 @@
+---
+title: "Asteroid Dodger: Borrowing and Ownership"
+description: "Understand why the borrow checker made you write code a certain way — ownership, borrowing rules, and common patterns explained."
+difficulty: intermediate
+topics: ["Rust", "ownership", "borrowing", "game dev"]
+publishDate: 2026-04-12
+---
+
+You have written several hundred lines of Rust at this point. Some of that code felt natural; some of it felt like fighting the compiler until it accepted your program. This tutorial steps back from new features and explains *why* the borrow checker required certain patterns in the code you already wrote.
+
+No new game code. No new features. Just understanding.
+
+## Milestones overview
+
+<div className="steps-grid">
+  <div className="step-card">
+    <span className="step-num">Milestone 1</span>
+    <span className="step-name">Ownership and Borrowing Rules</span>
+    <span className="step-desc">The three rules, and how they appear in your game</span>
+  </div>
+  <div className="step-card">
+    <span className="step-num">Milestone 2</span>
+    <span className="step-name">Common Patterns</span>
+    <span className="step-desc">Retain, index-based mutation, and why each works</span>
+  </div>
+</div>
+
+## Prerequisites
+
+- Completed the [shooting and destruction tutorial](/tutorials/rust-macroquad-shooting-destruction)
+- Project compiles and runs with bullets, asteroid splitting, and collision physics
+
+---
+
+## Milestone 1 — Ownership and borrowing rules
+
+<span className="step-badge">Milestone 1 of 2</span>
+
+### Step 1 — The three rules
+
+Every Rust program obeys three ownership rules. You have been following them implicitly since the first tutorial. Now we name them.
+
+**Rule 1: Every value has exactly one owner.**
+
+When `Game::new()` creates a `Player`, the `Game` struct owns it:
+
+```rust
+// game.rs
+pub fn new(sounds: Sounds) -> Self {
+    Self {
+        player: Player::new(),
+        asteroids: Vec::new(),
+        // ...
+    }
+}
+```
+
+`Player::new()` constructs a `Player` value and *transfers ownership* to the caller. The `Self { player: ... }` line moves that value into the `Game` struct's `player` field. After the move, no other variable holds the player — `Game` is the sole owner.
+
+The same applies to the `sounds` parameter. It arrives by value, not by reference, so `Game::new()` takes ownership of it:
+
+```rust
+pub fn new(sounds: Sounds) -> Self {
+    Self {
+        // ...
+        sounds,   // ownership moves into Game
+        // ...
+    }
+}
+```
+
+After calling `Game::new(sounds)`, the caller can no longer use `sounds` — it was moved.
+
+**Rule 2: When the owner goes out of scope, the value is dropped.**
+
+When a `Game` is dropped (e.g. the program exits), Rust drops every field — `player`, `asteroids`, `bullets`, `sounds`, all of it — automatically. No manual cleanup, no garbage collector. This is why Rust doesn't need `free()` or `delete`. The scope boundary *is* the cleanup.
+
+**Rule 3: At any given time, you can have either one `&mut` reference OR any number of `&` references — not both.**
+
+This is the rule that shapes most of the code patterns in your game. Look at `Player`:
+
+```rust
+pub fn draw(&self) {
+    // &self — shared reference
+    // can read self.pos, self.angle, etc.
+    // cannot modify anything
+}
+
+pub fn update(&mut self, dt: f32, keys: &Keybindings) {
+    // &mut self — exclusive reference
+    // can read AND write self.pos, self.vel, etc.
+    // no other reference to self can exist simultaneously
+}
+```
+
+`draw` takes `&self` because it only reads. Multiple parts of the program could theoretically hold `&self` references at the same time. `update` takes `&mut self` because it changes fields — velocity, position, invincibility timer. While `update` runs, nothing else can reference the player. That exclusivity is what prevents data races and aliasing bugs.
+
+<div className="callout callout-info">
+  <span className="callout-title">Why this matters for games</span>
+  <p>
+    Game loops typically alternate between an update phase (mutating state) and a draw phase
+    (reading state). Rust's borrowing rules formalize this: <code>&mut self</code> during update,
+    <code>&self</code> during draw. The compiler guarantees you never accidentally read stale
+    state mid-mutation.
+  </p>
+</div>
+
+### Step 2 — The copy-locals pattern
+
+Open `update_collisions` in `game.rs`. The first few lines look odd at first glance:
+
+```rust
+fn update_collisions(&mut self) {
+    let player_aabb = self.player.aabb();
+    let mut player_pos = self.player.pos;
+    let mut player_vel = self.player.vel;
+    let player_invincible = self.player.invincibility > 0.0;
+    let mut took_damage = false;
+
+    for asteroid in &mut self.asteroids {
+        // uses player_pos, player_vel — the local copies
+        // mutates asteroid.vel, asteroid.pos
+    }
+
+    self.player.pos = player_pos;
+    self.player.vel = player_vel;
+    // ...
+}
+```
+
+Why copy `self.player.pos` into a local before the loop, then write it back after? The answer is Rule 3.
+
+The `for asteroid in &mut self.asteroids` loop borrows `self.asteroids` mutably. If you tried to access `self.player.pos` inside that loop, you would be simultaneously holding:
+
+- `&mut self.asteroids` (from the loop)
+- `&self.player` or `&mut self.player` (to read/write position)
+
+Both reach through `&mut self`. The compiler sees two borrows of `self` overlapping — one mutable — and rejects the code.
+
+Here is what the error would look like if you wrote `self.player.pos` directly inside the loop:
+
+```
+error[E0502]: cannot borrow `self.player` as immutable because it is also
+              borrowed as mutable
+  --> src/game.rs:XX:YY
+   |
+   |     for asteroid in &mut self.asteroids {
+   |                     ------------------- mutable borrow occurs here
+   |         let normal = (asteroid.pos - self.player.pos).normalize();
+   |                                      ^^^^^^^^^^^ immutable borrow
+```
+
+The compiler does not analyze struct fields independently in this context. It sees `self` borrowed mutably (via `self.asteroids`) and refuses a second borrow of `self` (via `self.player`).
+
+Copying into locals breaks the alias. `player_pos` and `player_vel` are independent `Vec2` values — `Copy` types on the stack, no longer tied to `self`. The loop can mutate `self.asteroids` freely while the function reads and writes the locals. After the loop, we write the locals back:
+
+```rust
+self.player.pos = player_pos;
+self.player.vel = player_vel;
+```
+
+This is a standard Rust pattern: **copy out, process, write back**. You will see it any time a method needs to mutate one field of `self` while iterating another.
+
+<div className="callout callout-info">
+  <span className="callout-title">Vec2 is Copy</span>
+  <p>
+    macroquad's <code>Vec2</code> implements the <code>Copy</code> trait, meaning assignment copies
+    the value instead of moving it. <code>let mut player_pos = self.player.pos</code> creates an
+    independent copy — it does not borrow <code>self.player</code>. This is why the pattern works:
+    the local is a value, not a reference.
+  </p>
+</div>
+
+---
+
+## Milestone 2 — Common patterns
+
+<span className="step-badge">Milestone 2 of 2</span>
+
+### Step 3 — Retain with closures
+
+Look at `update_bullets` in `game.rs`. This block removes bullets that hit asteroids:
+
+```rust
+self.bullets.retain(|bullet| {
+    for (i, asteroid) in self.asteroids.iter().enumerate() {
+        if collision::point_in_polygon(bullet.pos, asteroid.pos, &asteroid.vertices) {
+            if !asteroids_hit.contains(&i) {
+                asteroids_hit.push(i);
+            }
+            if !bullet.piercing { return false; }
+        }
+    }
+    true
+});
+```
+
+`retain` takes `&mut Vec<Bullet>` — it needs mutable access to remove elements. The closure parameter `|bullet|` receives `&Bullet` for each element. Inside the closure, we also read `self.asteroids`.
+
+This compiles because Rust can see that `retain` borrows `self.bullets` mutably while the closure only borrows `self.asteroids` immutably. They are different fields. The compiler's borrow checker does track struct fields at the top level — when the borrows are clearly into *different* fields via a closure capture, it can prove they don't conflict.
+
+But this only works because the closure *reads* `self.asteroids`. If you tried to *modify* `self.bullets` inside the closure — say, pushing a new bullet — the compiler would reject it:
+
+```rust
+// THIS WOULD NOT COMPILE
+self.bullets.retain(|bullet| {
+    self.bullets.push(Bullet::new(...)); // ERROR: self.bullets already borrowed
+    true
+});
+```
+
+`retain` already holds `&mut self.bullets`. The closure cannot take a second mutable borrow of the same field. This is Rule 3 again: one `&mut` at a time.
+
+**Closures and capture.** The closure `|bullet| { ... }` captures `self` to access `self.asteroids`. By default, closures borrow their captures. The closure borrows `self.asteroids` as `&Vec<Asteroid>` — a shared reference. If the closure needed to move a value out of its environment (transferring ownership), you would write `move |bullet| { ... }`. In this case, `move` is unnecessary because the closure only needs to read.
+
+<div className="callout callout-info">
+  <span className="callout-title">When field-level tracking fails</span>
+  <p>
+    The compiler tracks fields at one level of depth. If you call a <em>method</em> on
+    <code>self</code> inside the closure — e.g. <code>self.some_helper()</code> — it borrows
+    all of <code>self</code>, not just one field. That would conflict with the mutable borrow
+    of <code>self.bullets</code>. Inline the logic or use locals to avoid this.
+  </p>
+</div>
+
+### Step 4 — Index-based mutation
+
+Still in `update_bullets`, look at how we destroy asteroids:
+
+```rust
+let mut asteroids_hit: Vec<usize> = Vec::new();
+self.bullets.retain(|bullet| {
+    for (i, asteroid) in self.asteroids.iter().enumerate() {
+        if collision::point_in_polygon(bullet.pos, asteroid.pos, &asteroid.vertices) {
+            if !asteroids_hit.contains(&i) {
+                asteroids_hit.push(i);
+            }
+            if !bullet.piercing { return false; }
+        }
+    }
+    true
+});
+
+// Later: remove hit asteroids
+asteroids_hit.sort_unstable();
+for i in asteroids_hit.into_iter().rev() {
+    self.asteroids.swap_remove(i);
+}
+```
+
+We collect *indices* into `asteroids_hit`, not references. Why?
+
+If we tried to hold `&mut Asteroid` references instead:
+
+```rust
+// THIS WOULD NOT COMPILE
+let mut to_remove: Vec<&mut Asteroid> = Vec::new();
+for bullet in &self.bullets {
+    for asteroid in &mut self.asteroids {
+        if hit(bullet, asteroid) {
+            to_remove.push(asteroid);  // borrows &mut asteroid
+        }
+    }
+}
+// Now try to remove them from self.asteroids — impossible,
+// because to_remove holds mutable references into the Vec
+```
+
+The mutable references in `to_remove` borrow into `self.asteroids`. You cannot then call `swap_remove` on `self.asteroids` because that would need `&mut Vec<Asteroid>` — conflicting with the outstanding `&mut Asteroid` borrows. Indices sidestep the problem entirely: a `usize` is just a number, not a borrow.
+
+**Why `swap_remove`?** Removing element `i` from a `Vec` with `remove(i)` shifts all later elements down — O(n) per removal. `swap_remove(i)` swaps element `i` with the last element, then pops — O(1). For a game running at 60 FPS, avoiding unnecessary copies matters. The tradeoff is that `swap_remove` changes the order of remaining elements, which is fine because asteroids have no meaningful order.
+
+**Why iterate in reverse?** After sorting the hit indices, we remove from highest to lowest. Each `swap_remove` only moves the last element, so removing index 5 doesn't invalidate index 3. If we removed low indices first, the swap would shift elements and our remaining indices would point to the wrong asteroids.
+
+<div className="callout callout-info">
+  <span className="callout-title">An alternative: split_at_mut</span>
+  <p>
+    Rust provides <code>split_at_mut</code> to get two non-overlapping <code>&mut</code> slices
+    from one <code>Vec</code>. This lets you hold mutable references to different parts of the
+    same collection simultaneously — useful for asteroid-asteroid physics where two asteroids
+    need to mutate each other. The physics tutorial explores this pattern.
+  </p>
+</div>
+
+---
+
+## Summary
+
+Four patterns, one underlying rule: you cannot have aliased mutable access.
+
+| Pattern | Why it exists | Where you used it |
+|---|---|---|
+| **Copy out, write back** | Can't borrow two fields of `self` when one is `&mut` via a loop | `update_collisions` |
+| **`&self` vs `&mut self`** | Shared reads are safe; exclusive writes prevent races | `draw` vs `update` on `Player` |
+| **Retain with closure** | Closure captures different fields than the one being mutated | `update_bullets` |
+| **Index-based removal** | Indices are values, not borrows — they don't hold references into the Vec | `update_bullets` asteroid destruction |
+
+These aren't workarounds. They are the patterns Rust pushes you toward because they eliminate an entire category of bugs — dangling references, iterator invalidation, concurrent mutation. The borrow checker is not an obstacle; it is a guarantee that your game's memory access is sound.
+
+## Next steps
+
+The [physics tutorial](/tutorials/rust-macroquad-physics) introduces `split_at_mut` for pairwise asteroid collisions and builds on the borrowing patterns covered here.

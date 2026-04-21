@@ -6,7 +6,7 @@ topics: ["Rust", "macroquad", "game dev", "audio", "particles"]
 publishDate: 2026-04-12
 ---
 
-This tutorial picks up where the [collisions and physics tutorial](/tutorials/rust-macroquad-collisions-physics) left off. You have shooting, elastic bounce physics, and asteroid splitting. The game plays well, but it feels flat without audio or visual feedback. By the end of this tutorial, lasers will chirp, explosions will rumble, and particle bursts will mark every impact — all generated procedurally with no external asset files.
+This tutorial picks up where the [collisions and physics tutorial](/tutorials/rust-macroquad-physics) left off. You have shooting, elastic bounce physics, and asteroid splitting. The game plays well, but it feels flat without audio or visual feedback. By the end of this tutorial, lasers will chirp, explosions will rumble, and particle bursts will mark every impact — all generated procedurally with no external asset files.
 
 ## What you'll add
 
@@ -32,7 +32,7 @@ This tutorial picks up where the [collisions and physics tutorial](/tutorials/ru
 
 ## Prerequisites
 
-- Completed the [collisions and physics tutorial](/tutorials/rust-macroquad-collisions-physics)
+- Completed the [physics tutorial](/tutorials/rust-macroquad-physics)
 - Project compiles and runs with shooting, elastic physics, and asteroid splitting
 
 ---
@@ -571,7 +571,7 @@ src/
 └── particle.rs   (new)
 ```
 
-**`collision.rs`**, **`player.rs`**, **`asteroid.rs`**, and **`bullet.rs`** are unchanged from the [collisions and physics tutorial](/tutorials/rust-macroquad-collisions-physics).
+**`collision.rs`**, **`player.rs`**, **`asteroid.rs`**, and **`bullet.rs`** are unchanged from the [collisions and physics tutorial](/tutorials/rust-macroquad-physics).
 
 **`src/main.rs`**
 
@@ -984,4 +984,4 @@ impl Game {
 
 ## Next steps
 
-- **[Add a Menu, Settings, and Spatial Grid](/tutorials/rust-macroquad-menu-settings)** — title screen, keybinding editor, high score tracking, and spatial partitioning for collision performance
+- **[Weapons and Bombs](/tutorials/rust-macroquad-weapons-bombs)** — four fire modes and deployable area-damage explosives

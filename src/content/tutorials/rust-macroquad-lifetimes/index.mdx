@@ -1,0 +1,325 @@
+---
+title: "Asteroid Dodger: Lifetimes and References"
+description: "Understand Rust lifetimes through the lens of your game's physics code — why split_at_mut works, when you need lifetime annotations, and when you don't."
+difficulty: intermediate
+topics: ["Rust", "lifetimes", "references", "game dev"]
+publishDate: 2026-04-12
+---
+
+Every reference in Rust has a lifetime — a span during which the reference is valid. Most of the time the compiler figures lifetimes out on its own. But when it can't, you need to step in with explicit annotations. This tutorial explains lifetimes using the physics code you already wrote in the [Collisions, Shooting, and Physics](/tutorials/rust-macroquad-physics) tutorial.
+
+This is a concept tutorial. You won't add much new code — the goal is to understand the code you already have, and to see what would happen if you'd made different design choices.
+
+## Milestones overview
+
+<div className="steps-grid">
+  <div className="step-card">
+    <span className="step-num">Milestone 1</span>
+    <span className="step-name">What Lifetimes Are</span>
+    <span className="step-desc">Elision rules, implicit lifetimes in your game code</span>
+  </div>
+  <div className="step-card">
+    <span className="step-num">Milestone 2</span>
+    <span className="step-name">When You Need Explicit Lifetimes</span>
+    <span className="step-desc">Returning references, structs with references, and why owned data wins</span>
+  </div>
+</div>
+
+## Prerequisites
+
+- Completed [Collisions, Shooting, and Physics](/tutorials/rust-macroquad-physics)
+- Familiar with `&`, `&mut`, and borrowing basics from the earlier tutorials
+
+---
+
+## Milestone 1 — What lifetimes are
+
+<span className="step-badge">Milestone 1 of 2</span>
+
+### Step 1 — Every reference has a lifetime
+
+A lifetime is the region of code where a reference is valid. The compiler tracks lifetimes automatically and rejects code where a reference would outlive the data it points to. You've already been writing functions that use lifetimes — you just haven't had to spell them out.
+
+Look at `overlaps` in `src/collision.rs`:
+
+```rust
+pub fn overlaps(&self, other: &Aabb) -> bool {
+    self.min.x <= other.max.x && self.max.x >= other.min.x
+        && self.min.y <= other.max.y && self.max.y >= other.min.y
+}
+```
+
+This function takes two references — `&self` and `&other` — and returns a `bool`. No lifetime annotations anywhere. The compiler inferred them using three **lifetime elision rules** that cover the vast majority of cases:
+
+1. **Each input reference gets its own lifetime.** The compiler treats the signature as if you'd written `fn overlaps<'a, 'b>(&'a self, other: &'b Aabb) -> bool`.
+
+2. **If there's exactly one input lifetime, it's applied to all output references.** This rule doesn't apply here because the return type is `bool`, not a reference — but it's the rule that lets functions like `fn first(s: &str) -> &str` work without annotations.
+
+3. **If one of the inputs is `&self` or `&mut self`, the output gets `self`'s lifetime.** This is why methods that return references from their own data never need explicit lifetimes.
+
+These three rules handle almost every function in a typical Rust program. The `aabb` method on `Player` is another example:
+
+```rust
+pub fn aabb(&self) -> Aabb {
+    Aabb::from_center_radius(self.pos, PLAYER_RADIUS)
+}
+```
+
+This returns an owned `Aabb`, not a reference — so lifetimes aren't involved at all. The value is moved to the caller, and no reference survives past the function boundary.
+
+Here's a case where rule 3 would matter — a hypothetical accessor that returns a reference:
+
+```rust
+impl Asteroid {
+    fn vertices(&self) -> &[Vec2] {
+        &self.vertices
+    }
+}
+```
+
+The compiler applies rule 3: the output `&[Vec2]` gets the lifetime of `&self`. The returned slice is only valid as long as the `Asteroid` it came from. You don't have to write `fn vertices<'a>(&'a self) -> &'a [Vec2]` — the compiler does it for you.
+
+<div className="callout callout-info">
+  <span className="callout-title">Elision is not inference</span>
+  <p>
+    Lifetime elision is a set of fixed rules applied to function signatures. It's not
+    the compiler "figuring out" the right answer through analysis — it's pattern matching.
+    If none of the three rules apply, the compiler asks you to write the lifetimes
+    explicitly. Inside function bodies, the compiler <em>does</em> fully infer lifetimes
+    by analyzing the control flow.
+  </p>
+</div>
+
+### Step 2 — Why split_at_mut works
+
+In `src/asteroid.rs`, `resolve_collisions` needs mutable access to two different asteroids at the same time. The naive approach fails:
+
+```rust
+// This does NOT compile:
+let a = &mut asteroids[i];
+let b = &mut asteroids[j];
+```
+
+Rust forbids two `&mut` references into the same `Vec` simultaneously. The borrow checker sees `asteroids[i]` and `asteroids[j]` as borrows of `asteroids` — and it can't prove at compile time that `i != j`. Even though you know the indices are different (because `j > i` in the loop), the compiler doesn't track index values.
+
+The solution you used was `split_at_mut`:
+
+```rust
+let (left, right) = asteroids.split_at_mut(j);
+let a = &mut left[i];
+let b = &mut right[0];
+```
+
+Here's the signature of `split_at_mut` (simplified from the standard library):
+
+```rust
+fn split_at_mut(&mut self, mid: usize) -> (&mut [T], &mut [T])
+```
+
+With lifetimes made explicit by elision rule 3:
+
+```rust
+fn split_at_mut<'a>(&'a mut self, mid: usize) -> (&'a mut [T], &'a mut [T])
+```
+
+Both output slices share the lifetime `'a` of the input. The compiler knows two things:
+
+1. The two slices are **disjoint** — `left` covers `[0..mid)` and `right` covers `[mid..len)`. This is guaranteed by the implementation of `split_at_mut` (which uses `unsafe` internally, but exposes a safe API).
+
+2. Both slices are valid for `'a` — the same duration as the original mutable borrow.
+
+Because the slices don't overlap, `&mut left[i]` and `&mut right[0]` point to different memory. The borrow checker accepts this, and you get two mutable references into what was originally one `Vec`.
+
+<div className="callout callout-info">
+  <span className="callout-title">The unsafe inside split_at_mut</span>
+  <p>
+    <code>split_at_mut</code> uses <code>unsafe</code> internally to create two
+    mutable pointers into the same allocation. The standard library authors proved that
+    the split is correct, and they wrapped it in a safe API. You get the benefit without
+    touching <code>unsafe</code> yourself. This is a common Rust pattern: unsafe
+    primitives wrapped in safe abstractions.
+  </p>
+</div>
+
+The full collision loop uses this pattern on every iteration:
+
+```rust
+pub fn resolve_collisions(asteroids: &mut [Asteroid]) {
+    let n = asteroids.len();
+    for i in 0..n {
+        for j in (i + 1)..n {
+            let (left, right) = asteroids.split_at_mut(j);
+            let a = &mut left[i];
+            let b = &mut right[0];
+            // ... elastic impulse math using a and b
+        }
+    }
+}
+```
+
+Each iteration splits at `j`, which changes every loop. The previous split's borrows end when the loop body ends, so the next iteration can split again. Lifetimes here are scoped to each iteration of the inner loop — the compiler verifies that `a` and `b` don't escape.
+
+---
+
+## Milestone 2 — When you need explicit lifetimes
+
+<span className="step-badge">Milestone 2 of 2</span>
+
+### Step 3 — Returning references
+
+Sometimes the elision rules aren't enough. Consider a hypothetical alternative to the broad-phase collision check. Right now the physics code iterates all pairs by index. What if you wrote a helper that returned references to colliding pairs instead?
+
+```rust
+// Hypothetical — returns references instead of indices
+fn potential_pairs(asteroids: &[Asteroid]) -> Vec<(&Asteroid, &Asteroid)> {
+    // ...
+}
+```
+
+This compiles because elision rule 2 kicks in: there's one input reference (`&[Asteroid]`), so all output references get its lifetime. The compiler reads the signature as:
+
+```rust
+fn potential_pairs<'a>(asteroids: &'a [Asteroid]) -> Vec<(&'a Asteroid, &'a Asteroid)>
+```
+
+The `'a` annotation says: "the `Asteroid` references in the output live exactly as long as the input slice." That's correct — the returned references point into the input slice.
+
+But now try to use it:
+
+```rust
+// This does NOT work:
+let pairs = potential_pairs(&asteroids);
+for (a, b) in pairs {
+    // Can't mutably borrow asteroids here — `pairs` holds
+    // immutable references into it
+}
+```
+
+The problem: `pairs` holds `&Asteroid` references that borrow `asteroids` immutably. As long as `pairs` exists, you can't get `&mut` access to `asteroids`. You can read the pairs but can't modify the asteroids to apply impulses.
+
+This is why the actual code uses indices:
+
+```rust
+// What we actually do — return owned data (indices)
+for i in 0..n {
+    for j in (i + 1)..n {
+        let (left, right) = asteroids.split_at_mut(j);
+        let a = &mut left[i];
+        let b = &mut right[0];
+        // Mutate freely — no outstanding references
+    }
+}
+```
+
+Indices are owned values (`usize`). They don't borrow anything. After you have the indices, you're free to take mutable references via `split_at_mut`. The pattern — **collect identifiers first, then mutate** — avoids tying the return value's lifetime to the input.
+
+<div className="callout callout-info">
+  <span className="callout-title">The general principle</span>
+  <p>
+    When you need to both <em>identify</em> items and <em>mutate</em> them, return owned
+    identifiers (indices, IDs, keys) rather than references. References lock the source
+    data against mutation for as long as the references exist. Owned identifiers release
+    the borrow immediately.
+  </p>
+</div>
+
+Here's another example where explicit lifetimes would be required — a function with two input references where the output could come from either:
+
+```rust
+// Two input lifetimes, one output reference — which input does it come from?
+// The compiler can't guess. You must annotate.
+fn closer_asteroid<'a>(
+    a: &'a Asteroid,
+    b: &'a Asteroid,
+    to: Vec2,
+) -> &'a Asteroid {
+    if a.pos.distance(to) < b.pos.distance(to) { a } else { b }
+}
+```
+
+Elision rule 2 says "if there's exactly one input lifetime." Here there are two (`&a` and `&b`), and no `&self`, so none of the three rules apply. Without `'a`, the compiler would reject this signature. The annotation tells it: "both inputs and the output share the same lifetime — the output is valid as long as both inputs are."
+
+### Step 4 — Structs with references (and why we avoid them)
+
+Your `Asteroid` struct owns its vertex data:
+
+```rust
+pub struct Asteroid {
+    pub pos: Vec2,
+    pub vel: Vec2,
+    pub radius: f32,
+    pub vertices: Vec<Vec2>,
+    pub generation: u8,
+}
+```
+
+`Vec<Vec2>` is owned data — the struct allocates and frees it. What if you tried to borrow vertices from somewhere else instead?
+
+```rust
+// Hypothetical — borrowing instead of owning
+struct Asteroid<'a> {
+    pos: Vec2,
+    vel: Vec2,
+    radius: f32,
+    vertices: &'a [Vec2],
+    generation: u8,
+}
+```
+
+The `'a` parameter on the struct means: "this `Asteroid` contains a reference, and it cannot outlive whatever `'a` points to." That lifetime parameter propagates to every place `Asteroid` appears:
+
+```rust
+// Every function that takes or returns Asteroid now carries the lifetime
+fn resolve_collisions<'a>(asteroids: &mut [Asteroid<'a>]) { ... }
+
+// Every struct that contains Asteroid inherits it
+struct Game<'a> {
+    player: Player,
+    asteroids: Vec<Asteroid<'a>>,
+    // ...
+}
+
+// The game can't outlive the vertex data
+impl<'a> Game<'a> {
+    fn update(&mut self, dt: f32) { ... }
+}
+```
+
+The `'a` infects the entire codebase. Every struct and function that touches `Asteroid` must declare and propagate the lifetime parameter. And the vertex data must live somewhere outside the `Asteroid` — you'd need a separate allocation that outlives every asteroid that references it. If you want to modify the vertices (say, for asteroid splitting), you'd need to update the external store and ensure no dangling references exist.
+
+Compare this to the owned version: `Vec<Vec2>` lives inside the struct. When the `Asteroid` is dropped, its vertices are dropped. When you split an asteroid, you generate new `Vec<Vec2>` data for each fragment. No lifetime parameters anywhere.
+
+<div className="callout callout-info">
+  <span className="callout-title">When references in structs make sense</span>
+  <p>
+    References in structs are the right tool for <strong>short-lived views</strong> over
+    existing data. Classic examples: a parser that borrows the input string
+    (<code>struct Token&lt;'a&gt; &#123; text: &amp;'a str &#125;</code>), an iterator
+    that borrows a collection, or a temporary computation struct that lives for one frame.
+    These are created, used, and dropped within a narrow scope — the lifetime parameter
+    is a feature, not a burden.
+  </p>
+</div>
+
+Game entities are the opposite: they're created dynamically, live for unpredictable durations, get mutated frequently, and get destroyed independently. Owned data (`Vec`, `String`, `Box`) is the natural fit.
+
+**The practical rule:** if you're adding lifetime parameters to a game struct, you probably want owned data instead. Reach for `Vec<T>` over `&[T]`, `String` over `&str`, and `Box<T>` over `&T`. Reserve references in structs for short-lived views — iterators, parsers, and single-frame computations.
+
+---
+
+## Summary
+
+| Concept | What it means | Game example |
+|---|---|---|
+| Lifetime elision | The compiler applies three rules to infer lifetimes on function signatures | `fn overlaps(&self, other: &Aabb) -> bool` — no annotations needed |
+| `split_at_mut` | Splits a mutable slice into two disjoint mutable slices | `resolve_collisions` borrows two asteroids simultaneously |
+| Explicit `'a` on functions | Tells the compiler how output lifetimes relate to input lifetimes | `fn closer_asteroid<'a>(a: &'a Asteroid, b: &'a Asteroid, ...) -> &'a Asteroid` |
+| Lifetime on structs | The struct can't outlive the referenced data; the parameter propagates everywhere | `struct Asteroid<'a> { vertices: &'a [Vec2] }` — avoided in favor of `Vec<Vec2>` |
+| Owned data avoids lifetimes | `Vec`, `String`, `Box` own their data — no lifetime annotations needed | `vertices: Vec<Vec2>` keeps `Asteroid` simple and independent |
+
+The core insight: lifetimes exist to prevent dangling references. Most of the time the compiler handles them silently. When it can't, the annotations you write aren't inventing new rules — they're telling the compiler what's already true about your data's relationships. And often, the simplest fix is to own the data instead of borrowing it.
+
+## Next steps
+
+- **[Add Sound and Particle Effects](/tutorials/rust-macroquad-sound-particles)** — procedural audio, explosion particles, and screen shake
+- **[Add a Menu, Settings, and Spatial Grid](/tutorials/rust-macroquad-sound-particles)** — title screen, keybinding editor, spatial partitioning

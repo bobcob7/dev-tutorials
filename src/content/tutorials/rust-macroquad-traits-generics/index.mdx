@@ -1,0 +1,462 @@
+---
+title: "Asteroid Dodger: Traits and Generics"
+description: "Extract shared behavior into traits and write generic functions — refactoring your asteroid dodger to use Rust's polymorphism."
+difficulty: intermediate
+topics: ["Rust", "traits", "generics", "game dev"]
+publishDate: 2026-04-12
+---
+
+This tutorial picks up where the [weapons and bombs tutorial](/tutorials/rust-macroquad-weapons-bombs) left off. The game has four entity types with nearly identical method signatures — `pos`, `update`, `draw`, `is_off_screen` — duplicated across separate files. This tutorial extracts those patterns into a trait, then writes generic functions that work with any entity type.
+
+## What you'll change
+
+- Define an `Entity` trait capturing the shared interface
+- Implement it for `Asteroid`, `Bullet`, and `Bomb`
+- Replace repetitive draw loops with a generic `draw_entities` function
+- Write a generic `retain_in_range` helper using `where` clauses
+- Add a default method to eliminate duplicate `is_off_screen` logic
+
+## Milestones overview
+
+<div className="steps-grid">
+  <div className="step-card">
+    <span className="step-num">Milestone 1</span>
+    <span className="step-name">Traits</span>
+    <span className="step-desc">Define Entity and implement it</span>
+  </div>
+  <div className="step-card">
+    <span className="step-num">Milestone 2</span>
+    <span className="step-name">Generics</span>
+    <span className="step-desc">Generic functions and default methods</span>
+  </div>
+</div>
+
+## Prerequisites
+
+- Completed the [weapons and bombs tutorial](/tutorials/rust-macroquad-weapons-bombs)
+- Project compiles and runs with weapons, bombs, particles, and spatial grid
+
+---
+
+## Milestone 1 — Traits
+
+<span className="step-badge">Milestone 1 of 2</span>
+
+### Step 1 — Define the Entity trait (`src/entity.rs`)
+
+Look at the existing structs. `Asteroid`, `Bullet`, and `Bomb` all share the same shape:
+
+```rust
+pub pos: Vec2,
+pub fn update(&mut self, dt: f32) { ... }
+pub fn draw(&self) { ... }
+pub fn is_off_screen(&self) -> bool { ... }
+```
+
+That repeated pattern is exactly what traits capture. Create `src/entity.rs`:
+
+```rust
+// src/entity.rs
+use macroquad::prelude::*;
+
+pub trait Entity {
+    fn pos(&self) -> Vec2;
+    fn update(&mut self, dt: f32);
+    fn draw(&self);
+}
+```
+
+Register the module in `main.rs`:
+
+```rust
+mod entity;
+```
+
+Three methods, no implementations — just the contract. Any type that implements `Entity` promises it can report its position, update its state, and draw itself.
+
+<div className="callout callout-info">
+  <span className="callout-title">Why not Player?</span>
+  <p>
+    <code>Player::update</code> takes <code>&amp;Keybindings</code> in addition to
+    <code>dt</code>, so it doesn't fit the <code>Entity</code> signature. Forcing it
+    to conform would mean either ignoring the keybindings parameter or adding it to the
+    trait — neither is a good fit. Traits should capture genuine shared behavior, not
+    force every type into the same mold.
+  </p>
+</div>
+
+If you've used Go or Java, traits look like interfaces. The key difference: Rust traits can have default implementations, and when used with generics (`<T: Entity>`), the compiler generates specialized code for each concrete type. There's no virtual function table and no runtime cost — this is called *static dispatch*.
+
+Now implement the trait for each type.
+
+**`src/asteroid.rs`** — add at the bottom:
+
+```rust
+use crate::entity::Entity;
+
+impl Entity for Asteroid {
+    fn pos(&self) -> Vec2 {
+        self.pos
+    }
+
+    fn update(&mut self, dt: f32) {
+        self.update(dt);
+    }
+
+    fn draw(&self) {
+        self.draw();
+    }
+}
+```
+
+There's a subtlety here. The trait's `update` and `draw` methods have the same signatures as the inherent methods already on `Asteroid`. Rust resolves this without ambiguity: inside the `impl Entity for Asteroid` block, `self.update(dt)` calls the inherent method because inherent methods take priority. From outside, you call the trait method via the trait — `Entity::draw(&asteroid)` or through a generic bound.
+
+**`src/bullet.rs`** — add at the bottom:
+
+```rust
+use crate::entity::Entity;
+
+impl Entity for Bullet {
+    fn pos(&self) -> Vec2 {
+        self.pos
+    }
+
+    fn update(&mut self, dt: f32) {
+        self.update(dt);
+    }
+
+    fn draw(&self) {
+        self.draw();
+    }
+}
+```
+
+**`src/bomb.rs`** — add at the bottom:
+
+```rust
+use crate::entity::Entity;
+
+impl Entity for Bomb {
+    fn pos(&self) -> Vec2 {
+        self.pos
+    }
+
+    fn update(&mut self, dt: f32) {
+        self.update(dt);
+    }
+
+    fn draw(&self) {
+        self.draw();
+    }
+}
+```
+
+<div className="callout callout-tip">
+  <span className="callout-title">Run it</span>
+  <p>
+    <code>cargo run</code> — everything should compile and behave identically. Adding
+    trait implementations is purely additive; nothing changes until we start using the
+    trait.
+  </p>
+</div>
+
+### Step 2 — Use the trait with a generic function
+
+The `Game::draw` method has three identical loops:
+
+```rust
+for asteroid in &self.asteroids {
+    asteroid.draw();
+}
+for bullet in &self.bullets {
+    bullet.draw();
+}
+for bomb in &self.bombs {
+    bomb.draw();
+}
+```
+
+Write a generic function that replaces all three. Add this to `src/entity.rs`:
+
+```rust
+pub fn draw_entities<T: Entity>(entities: &[T]) {
+    for e in entities {
+        e.draw();
+    }
+}
+```
+
+The `<T: Entity>` syntax means "any type `T` that implements the `Entity` trait." The compiler generates a specialized version of `draw_entities` for each type you call it with — one for `Asteroid`, one for `Bullet`, one for `Bomb`. This is called *monomorphization*. At runtime, each version calls the concrete `draw` method directly, with zero overhead.
+
+Now update `Game::draw` in `src/game.rs`. Add the import:
+
+```rust
+use crate::entity::draw_entities;
+```
+
+Replace the three draw loops with:
+
+```rust
+draw_entities(&self.asteroids);
+draw_entities(&self.bullets);
+draw_entities(&self.bombs);
+```
+
+Three loops become three calls. If you add a new entity type later, you implement `Entity` for it and pass its `Vec` to `draw_entities` — no new loop needed.
+
+<div className="callout callout-info">
+  <span className="callout-title">Generics vs trait objects</span>
+  <p>
+    There's another way to use traits: <em>trait objects</em> with dynamic dispatch.
+    You'd write <code>&amp;dyn Entity</code> instead of <code>&lt;T: Entity&gt;</code>.
+    The compiler produces one version of the function and uses a vtable pointer to call
+    the right method at runtime. It's more flexible (you can mix different types in one
+    collection) but has a small runtime cost per call. For game entity drawing, static
+    dispatch with generics is the better fit — each <code>Vec</code> holds one type,
+    and we want zero overhead in the draw loop.
+  </p>
+</div>
+
+<div className="callout callout-tip">
+  <span className="callout-title">Run it</span>
+  <p>
+    <code>cargo run</code> — the game looks and plays exactly the same. The draw code
+    is just shorter and more uniform.
+  </p>
+</div>
+
+---
+
+## Milestone 2 — Generics
+
+<span className="step-badge">Milestone 2 of 2</span>
+
+### Step 3 — Generic retain function with `where` clause
+
+The game has several places that remove entities based on distance or screen bounds. Write a generic helper that retains only entities within range of a point. Add to `src/entity.rs`:
+
+```rust
+pub fn retain_in_range<T>(entities: &mut Vec<T>, center: Vec2, max_dist: f32)
+where
+    T: Entity,
+{
+    entities.retain(|e| e.pos().distance(center) <= max_dist);
+}
+```
+
+This does the same thing as `<T: Entity>` on the function signature, but uses a `where` clause instead. Both forms are equivalent — the `where` clause is preferred when you have multiple bounds or longer signatures because it keeps the function name readable.
+
+For example, if you needed multiple bounds:
+
+```rust
+fn process<T>(items: &mut Vec<T>)
+where
+    T: Entity + Clone + std::fmt::Debug,
+{
+    // ...
+}
+```
+
+Compare with the inline form: `fn process<T: Entity + Clone + std::fmt::Debug>(items: &mut Vec<T>)`. The `where` version is easier to scan.
+
+You can use `retain_in_range` anywhere you need distance-based cleanup. For example, in `game.rs` you could replace manual retain logic:
+
+```rust
+use crate::entity::retain_in_range;
+```
+
+```rust
+// In update, after bomb explosions — keep only nearby fragments
+retain_in_range(&mut self.asteroids, self.player.pos, 2000.0);
+```
+
+This is optional — the existing `is_off_screen` retain calls work fine. The point is that generic functions let you write the pattern once and apply it to any entity type.
+
+### Step 4 — Default methods and derive
+
+The `is_off_screen` method is nearly identical across `Asteroid`, `Bullet`, and `Bomb` — check if the position is outside the screen with some margin. That's a perfect candidate for a default method.
+
+Update the `Entity` trait in `src/entity.rs`:
+
+```rust
+use macroquad::prelude::*;
+
+pub trait Entity {
+    fn pos(&self) -> Vec2;
+    fn update(&mut self, dt: f32);
+    fn draw(&self);
+
+    fn is_off_screen(&self) -> bool {
+        let (sw, sh) = (screen_width(), screen_height());
+        let p = self.pos();
+        p.x < -200.0 || p.x > sw + 200.0 || p.y < -200.0 || p.y > sh + 200.0
+    }
+}
+
+pub fn draw_entities<T: Entity>(entities: &[T]) {
+    for e in entities {
+        e.draw();
+    }
+}
+
+pub fn retain_in_range<T>(entities: &mut Vec<T>, center: Vec2, max_dist: f32)
+where
+    T: Entity,
+{
+    entities.retain(|e| e.pos().distance(center) <= max_dist);
+}
+```
+
+The `is_off_screen` method has a body — that makes it a *default method*. Any type implementing `Entity` gets this behavior for free. If a type needs different bounds (like `Bullet`, which currently uses a tighter margin of 0.0 instead of 200.0), it can override the default by providing its own implementation.
+
+In `src/bullet.rs`, the current `is_off_screen` uses zero margin — bullets disappear the moment they leave the screen. Override the default:
+
+```rust
+impl Entity for Bullet {
+    fn pos(&self) -> Vec2 {
+        self.pos
+    }
+
+    fn update(&mut self, dt: f32) {
+        self.update(dt);
+    }
+
+    fn draw(&self) {
+        self.draw();
+    }
+
+    fn is_off_screen(&self) -> bool {
+        let (sw, sh) = (screen_width(), screen_height());
+        self.pos.x < 0.0 || self.pos.x > sw || self.pos.y < 0.0 || self.pos.y > sh
+    }
+}
+```
+
+For `Asteroid` and `Bomb`, the default 200px margin matches their existing logic, so those implementations don't need to override it. They get `is_off_screen` automatically.
+
+Now you can use the trait method for cleanup. In `game.rs`, the retain calls can use the trait:
+
+```rust
+self.asteroids.retain(|a| !Entity::is_off_screen(a));
+self.bombs.retain(|b| !b.exploded && !Entity::is_off_screen(b));
+```
+
+Or keep calling the inherent `is_off_screen` methods — both work. The default method just means you no longer need to write the same bounds-checking logic in every new entity type you add.
+
+<div className="callout callout-info">
+  <span className="callout-title">Derive macros — automatic trait implementations</span>
+  <p>
+    You've been writing <code>#[derive(Clone, Copy, PartialEq)]</code> on structs like
+    <code>WeaponType</code> throughout this series. Each one is a derive macro that
+    auto-generates a trait implementation. <code>Clone</code> generates a <code>clone()</code>
+    method, <code>PartialEq</code> generates <code>==</code> comparison — all by inspecting
+    the struct's fields at compile time. You can't <code>#[derive(Entity)]</code> because
+    <code>Entity</code> needs custom drawing logic, but for data-oriented traits like
+    <code>Clone</code>, <code>Debug</code>, and <code>PartialEq</code>, derive macros
+    eliminate boilerplate entirely.
+  </p>
+</div>
+
+<div className="callout callout-tip">
+  <span className="callout-title">Run it</span>
+  <p>
+    <code>cargo run</code> — same game, cleaner code. The <code>Entity</code> trait
+    captures the shared interface, generic functions eliminate duplicate loops, and
+    default methods reduce copy-paste across entity types.
+  </p>
+</div>
+
+---
+
+## Complete listing
+
+New file: `entity.rs`. Modified: `asteroid.rs`, `bullet.rs`, `bomb.rs`, `game.rs`, `main.rs`.
+
+**`src/entity.rs`** (new)
+
+```rust
+use macroquad::prelude::*;
+
+pub trait Entity {
+    fn pos(&self) -> Vec2;
+    fn update(&mut self, dt: f32);
+    fn draw(&self);
+
+    fn is_off_screen(&self) -> bool {
+        let (sw, sh) = (screen_width(), screen_height());
+        let p = self.pos();
+        p.x < -200.0 || p.x > sw + 200.0 || p.y < -200.0 || p.y > sh + 200.0
+    }
+}
+
+pub fn draw_entities<T: Entity>(entities: &[T]) {
+    for e in entities {
+        e.draw();
+    }
+}
+
+pub fn retain_in_range<T>(entities: &mut Vec<T>, center: Vec2, max_dist: f32)
+where
+    T: Entity,
+{
+    entities.retain(|e| e.pos().distance(center) <= max_dist);
+}
+```
+
+**`src/asteroid.rs`** — append `impl Entity`:
+
+```rust
+use crate::entity::Entity;
+
+impl Entity for Asteroid {
+    fn pos(&self) -> Vec2 { self.pos }
+    fn update(&mut self, dt: f32) { self.update(dt); }
+    fn draw(&self) { self.draw(); }
+}
+```
+
+**`src/bullet.rs`** — append `impl Entity` (overrides `is_off_screen`):
+
+```rust
+use crate::entity::Entity;
+
+impl Entity for Bullet {
+    fn pos(&self) -> Vec2 { self.pos }
+    fn update(&mut self, dt: f32) { self.update(dt); }
+    fn draw(&self) { self.draw(); }
+
+    fn is_off_screen(&self) -> bool {
+        let (sw, sh) = (screen_width(), screen_height());
+        self.pos.x < 0.0 || self.pos.x > sw || self.pos.y < 0.0 || self.pos.y > sh
+    }
+}
+```
+
+**`src/bomb.rs`** — append `impl Entity`:
+
+```rust
+use crate::entity::Entity;
+
+impl Entity for Bomb {
+    fn pos(&self) -> Vec2 { self.pos }
+    fn update(&mut self, dt: f32) { self.update(dt); }
+    fn draw(&self) { self.draw(); }
+}
+```
+
+**`src/main.rs`** — add `mod entity;` after the other module declarations.
+
+**`src/game.rs`** — add `use crate::entity::draw_entities;` and replace the three draw loops in `Game::draw` with:
+
+```rust
+draw_entities(&self.asteroids);
+draw_entities(&self.bullets);
+draw_entities(&self.bombs);
+```
+
+All other files are unchanged from the previous tutorial.
+
+## Next steps
+
+- **[Add a Menu and Shop](/tutorials/rust-macroquad-menu-shop)** — between-rounds upgrades and a shop interface
+- **[Add Power-ups and a Shop](/tutorials/rust-macroquad-menu-shop)** — weapon upgrades, bomb refills, shields

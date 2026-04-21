@@ -1,0 +1,374 @@
+---
+title: "Asteroid Dodger: Unit Testing"
+description: "Learn Rust's built-in testing framework by writing tests for the collision detection module."
+difficulty: beginner
+topics: ["Rust", "testing", "game dev"]
+publishDate: 2026-04-12
+---
+
+Your collision module is pure math with no rendering or input dependencies — a perfect first target for Rust's built-in test framework. By the end of this tutorial you will have a thorough test suite for every function in `collision.rs`.
+
+## Milestones overview
+
+<div className="steps-grid">
+  <div className="step-card">
+    <span className="step-num">Milestone 1</span>
+    <span className="step-name">Your First Tests</span>
+    <span className="step-desc">Test Aabb::overlaps, closest_point_on_segment, point_in_polygon</span>
+  </div>
+  <div className="step-card">
+    <span className="step-num">Milestone 2</span>
+    <span className="step-name">Testing circle_hits_polygon</span>
+    <span className="step-desc">Integration-style tests, edge cases, test helpers</span>
+  </div>
+</div>
+
+## Prerequisites
+
+- Completed the [collision detection tutorial](/tutorials/rust-macroquad-collision-detection)
+- `collision.rs` contains `Aabb`, `closest_point_on_segment`, `point_in_polygon`, and `circle_hits_polygon`
+
+---
+
+## Milestone 1 — Your first tests
+
+<span className="step-badge">Milestone 1 of 2</span>
+
+### Step 1 — A test module for Aabb::overlaps
+
+Open `src/collision.rs` and add a test module at the very bottom of the file:
+
+```rust
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use macroquad::prelude::Vec2;
+
+    #[test]
+    fn overlapping_boxes_return_true() {
+        let a = Aabb { min: Vec2::new(0.0, 0.0), max: Vec2::new(10.0, 10.0) };
+        let b = Aabb { min: Vec2::new(5.0, 5.0), max: Vec2::new(15.0, 15.0) };
+        assert!(a.overlaps(&b));
+    }
+
+    #[test]
+    fn non_overlapping_boxes_return_false() {
+        let a = Aabb { min: Vec2::new(0.0, 0.0), max: Vec2::new(10.0, 10.0) };
+        let b = Aabb { min: Vec2::new(20.0, 20.0), max: Vec2::new(30.0, 30.0) };
+        assert!(!a.overlaps(&b));
+    }
+
+    #[test]
+    fn edge_touching_boxes_overlap() {
+        let a = Aabb { min: Vec2::new(0.0, 0.0), max: Vec2::new(10.0, 10.0) };
+        let b = Aabb { min: Vec2::new(10.0, 0.0), max: Vec2::new(20.0, 10.0) };
+        assert!(a.overlaps(&b));
+    }
+}
+```
+
+Run the tests:
+
+```bash
+cargo test
+```
+
+You should see three passing tests.
+
+<div className="callout callout-info">
+  <span className="callout-title">How Rust tests work</span>
+  <p>
+    <code>#[cfg(test)]</code> tells the compiler to only include this module when
+    running <code>cargo test</code> — it is stripped from release builds entirely.
+    <code>#[test]</code> marks individual functions as test cases. <code>assert!</code>
+    checks a boolean is true; <code>assert_eq!</code> checks two values are
+    equal and prints both sides on failure. <code>use super::*</code> imports everything
+    from the parent module so tests can access private items too.
+  </p>
+</div>
+
+### Step 2 — Test the geometry helpers
+
+Still inside `mod tests`, add tests for `closest_point_on_segment` — projection onto the middle, clamping past the end, and clamping before the start:
+
+```rust
+    #[test]
+    fn closest_point_projects_onto_middle() {
+        let result = closest_point_on_segment(
+            Vec2::new(0.0, 0.0), Vec2::new(10.0, 0.0), Vec2::new(5.0, 5.0),
+        );
+        assert!((result - Vec2::new(5.0, 0.0)).length() < 1e-5);
+    }
+
+    #[test]
+    fn closest_point_clamps_past_end() {
+        let result = closest_point_on_segment(
+            Vec2::new(0.0, 0.0), Vec2::new(10.0, 0.0), Vec2::new(20.0, 3.0),
+        );
+        assert!((result - Vec2::new(10.0, 0.0)).length() < 1e-5);
+    }
+
+    #[test]
+    fn closest_point_at_start_returns_start() {
+        let a = Vec2::new(0.0, 0.0);
+        let result = closest_point_on_segment(a, Vec2::new(10.0, 0.0), Vec2::new(-5.0, 0.0));
+        assert!((result - a).length() < 1e-5);
+    }
+```
+
+These compare floating-point results by checking the distance is below a tiny epsilon (`1e-5`). Exact equality (`assert_eq!`) is fragile with floats due to rounding.
+
+Now test `point_in_polygon` with a 10x10 square centered at the origin:
+
+```rust
+    #[test]
+    fn point_inside_square() {
+        let verts = vec![
+            Vec2::new(-5.0, -5.0), Vec2::new(5.0, -5.0),
+            Vec2::new(5.0, 5.0), Vec2::new(-5.0, 5.0),
+        ];
+        assert!(point_in_polygon(Vec2::new(0.0, 0.0), Vec2::ZERO, &verts));
+    }
+
+    #[test]
+    fn point_outside_square() {
+        let verts = vec![
+            Vec2::new(-5.0, -5.0), Vec2::new(5.0, -5.0),
+            Vec2::new(5.0, 5.0), Vec2::new(-5.0, 5.0),
+        ];
+        assert!(!point_in_polygon(Vec2::new(20.0, 20.0), Vec2::ZERO, &verts));
+    }
+
+    #[test]
+    fn point_on_edge_counts_as_inside() {
+        let verts = vec![
+            Vec2::new(-5.0, -5.0), Vec2::new(5.0, -5.0),
+            Vec2::new(5.0, 5.0), Vec2::new(-5.0, 5.0),
+        ];
+        assert!(point_in_polygon(Vec2::new(0.0, -5.0), Vec2::ZERO, &verts));
+    }
+```
+
+Run `cargo test` again — you should now see 9 passing tests.
+
+---
+
+## Milestone 2 — Testing circle_hits_polygon
+
+<span className="step-badge">Milestone 2 of 2</span>
+
+### Step 3 — Core circle-polygon cases
+
+`circle_hits_polygon` combines both helpers — it checks each edge against the circle radius, then falls back to `point_in_polygon`. Start with a small helper that returns a 100x100 square, then test four scenarios:
+
+```rust
+    fn big_square() -> Vec<Vec2> {
+        vec![
+            Vec2::new(-50.0, -50.0), Vec2::new(50.0, -50.0),
+            Vec2::new(50.0, 50.0), Vec2::new(-50.0, 50.0),
+        ]
+    }
+
+    #[test]
+    fn circle_inside_polygon() {
+        assert!(circle_hits_polygon(Vec2::ZERO, 5.0, Vec2::ZERO, &big_square()));
+    }
+
+    #[test]
+    fn circle_clearly_outside_polygon() {
+        assert!(!circle_hits_polygon(Vec2::new(200.0, 200.0), 5.0, Vec2::ZERO, &big_square()));
+    }
+
+    #[test]
+    fn circle_touching_edge() {
+        assert!(circle_hits_polygon(Vec2::new(50.0, 0.0), 5.0, Vec2::ZERO, &big_square()));
+    }
+
+    #[test]
+    fn circle_outside_but_radius_reaches_edge() {
+        // Center is 3 units outside the right edge, but radius is 5
+        assert!(circle_hits_polygon(Vec2::new(53.0, 0.0), 5.0, Vec2::ZERO, &big_square()));
+    }
+```
+
+### Step 4 — Edge cases and organization
+
+`big_square()` helped, but the edge-case tests need squares of different sizes. Replace it with a parameterized helper at the top of `mod tests` (below the imports):
+
+```rust
+    fn square_vertices(size: f32) -> Vec<Vec2> {
+        let h = size / 2.0;
+        vec![
+            Vec2::new(-h, -h), Vec2::new(h, -h),
+            Vec2::new(h, h), Vec2::new(-h, h),
+        ]
+    }
+```
+
+Helper functions inside the test module are only compiled during testing and don't need `#[test]`. Now add edge-case tests:
+
+```rust
+    #[test]
+    fn zero_radius_circle_inside() {
+        let verts = square_vertices(100.0);
+        assert!(circle_hits_polygon(Vec2::ZERO, 0.0, Vec2::ZERO, &verts));
+    }
+
+    #[test]
+    fn zero_radius_circle_outside() {
+        let verts = square_vertices(100.0);
+        assert!(!circle_hits_polygon(Vec2::new(200.0, 0.0), 0.0, Vec2::ZERO, &verts));
+    }
+
+    #[test]
+    fn polygon_with_two_vertices_is_a_line() {
+        let verts = vec![Vec2::new(-10.0, 0.0), Vec2::new(10.0, 0.0)];
+        assert!(circle_hits_polygon(Vec2::new(0.0, 2.0), 5.0, Vec2::ZERO, &verts));
+        assert!(!circle_hits_polygon(Vec2::new(0.0, 20.0), 5.0, Vec2::ZERO, &verts));
+    }
+
+    #[test]
+    fn very_large_polygon() {
+        let verts = square_vertices(10_000.0);
+        assert!(circle_hits_polygon(Vec2::ZERO, 1.0, Vec2::ZERO, &verts));
+        assert!(!circle_hits_polygon(Vec2::new(6000.0, 0.0), 1.0, Vec2::ZERO, &verts));
+    }
+```
+
+Run the full suite one more time:
+
+```bash
+cargo test
+```
+
+All 17 tests should pass.
+
+<div className="callout callout-tip">
+  <span className="callout-title">cargo test flags</span>
+  <p>
+    <code>cargo test --lib</code> runs only unit tests inside your <code>src/</code> files,
+    skipping doc-tests and integration tests. This is faster when you only care about
+    the code you just changed. Plain <code>cargo test</code> runs everything.
+  </p>
+</div>
+
+<div className="callout callout-info">
+  <span className="callout-title">#[should_panic]</span>
+  <p>
+    If a function is supposed to panic on bad input, mark a test with
+    <code>#[should_panic]</code> and it passes only if the function panics. We don't
+    need it here — our collision functions handle degenerate inputs gracefully — but
+    it is useful for testing validation code that calls <code>panic!</code> or
+    <code>unwrap()</code> intentionally.
+  </p>
+</div>
+
+---
+
+## Full test module
+
+Here is the complete `#[cfg(test)]` block for the bottom of `src/collision.rs`:
+
+```rust
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use macroquad::prelude::Vec2;
+
+    fn square_vertices(size: f32) -> Vec<Vec2> {
+        let h = size / 2.0;
+        vec![
+            Vec2::new(-h, -h), Vec2::new(h, -h),
+            Vec2::new(h, h), Vec2::new(-h, h),
+        ]
+    }
+
+    #[test]
+    fn overlapping_boxes_return_true() {
+        let a = Aabb { min: Vec2::new(0.0, 0.0), max: Vec2::new(10.0, 10.0) };
+        let b = Aabb { min: Vec2::new(5.0, 5.0), max: Vec2::new(15.0, 15.0) };
+        assert!(a.overlaps(&b));
+    }
+    #[test]
+    fn non_overlapping_boxes_return_false() {
+        let a = Aabb { min: Vec2::new(0.0, 0.0), max: Vec2::new(10.0, 10.0) };
+        let b = Aabb { min: Vec2::new(20.0, 20.0), max: Vec2::new(30.0, 30.0) };
+        assert!(!a.overlaps(&b));
+    }
+    #[test]
+    fn edge_touching_boxes_overlap() {
+        let a = Aabb { min: Vec2::new(0.0, 0.0), max: Vec2::new(10.0, 10.0) };
+        let b = Aabb { min: Vec2::new(10.0, 0.0), max: Vec2::new(20.0, 10.0) };
+        assert!(a.overlaps(&b));
+    }
+    #[test]
+    fn closest_point_projects_onto_middle() {
+        let r = closest_point_on_segment(Vec2::ZERO, Vec2::new(10.0, 0.0), Vec2::new(5.0, 5.0));
+        assert!((r - Vec2::new(5.0, 0.0)).length() < 1e-5);
+    }
+    #[test]
+    fn closest_point_clamps_past_end() {
+        let r = closest_point_on_segment(Vec2::ZERO, Vec2::new(10.0, 0.0), Vec2::new(20.0, 3.0));
+        assert!((r - Vec2::new(10.0, 0.0)).length() < 1e-5);
+    }
+    #[test]
+    fn closest_point_at_start_returns_start() {
+        let r = closest_point_on_segment(Vec2::ZERO, Vec2::new(10.0, 0.0), Vec2::new(-5.0, 0.0));
+        assert!(r.length() < 1e-5);
+    }
+    #[test]
+    fn point_inside_square() {
+        assert!(point_in_polygon(Vec2::ZERO, Vec2::ZERO, &square_vertices(10.0)));
+    }
+    #[test]
+    fn point_outside_square() {
+        assert!(!point_in_polygon(Vec2::new(20.0, 20.0), Vec2::ZERO, &square_vertices(10.0)));
+    }
+    #[test]
+    fn point_on_edge_counts_as_inside() {
+        assert!(point_in_polygon(Vec2::new(0.0, -5.0), Vec2::ZERO, &square_vertices(10.0)));
+    }
+    #[test]
+    fn circle_inside_polygon() {
+        assert!(circle_hits_polygon(Vec2::ZERO, 5.0, Vec2::ZERO, &square_vertices(100.0)));
+    }
+    #[test]
+    fn circle_clearly_outside_polygon() {
+        assert!(!circle_hits_polygon(Vec2::new(200.0, 200.0), 5.0, Vec2::ZERO, &square_vertices(100.0)));
+    }
+    #[test]
+    fn circle_touching_edge() {
+        assert!(circle_hits_polygon(Vec2::new(50.0, 0.0), 5.0, Vec2::ZERO, &square_vertices(100.0)));
+    }
+    #[test]
+    fn circle_outside_but_radius_reaches_edge() {
+        assert!(circle_hits_polygon(Vec2::new(53.0, 0.0), 5.0, Vec2::ZERO, &square_vertices(100.0)));
+    }
+    #[test]
+    fn zero_radius_circle_inside() {
+        assert!(circle_hits_polygon(Vec2::ZERO, 0.0, Vec2::ZERO, &square_vertices(100.0)));
+    }
+    #[test]
+    fn zero_radius_circle_outside() {
+        assert!(!circle_hits_polygon(Vec2::new(200.0, 0.0), 0.0, Vec2::ZERO, &square_vertices(100.0)));
+    }
+    #[test]
+    fn polygon_with_two_vertices_is_a_line() {
+        let verts = vec![Vec2::new(-10.0, 0.0), Vec2::new(10.0, 0.0)];
+        assert!(circle_hits_polygon(Vec2::new(0.0, 2.0), 5.0, Vec2::ZERO, &verts));
+        assert!(!circle_hits_polygon(Vec2::new(0.0, 20.0), 5.0, Vec2::ZERO, &verts));
+    }
+    #[test]
+    fn very_large_polygon() {
+        let verts = square_vertices(10_000.0);
+        assert!(circle_hits_polygon(Vec2::ZERO, 1.0, Vec2::ZERO, &verts));
+        assert!(!circle_hits_polygon(Vec2::new(6000.0, 0.0), 1.0, Vec2::ZERO, &verts));
+    }
+}
+```
+
+---
+
+## Next steps
+
+- **[Weapons and Bombs](/tutorials/rust-macroquad-weapons-bombs)** — add weapon variety and bomb mechanics to your asteroid dodger
