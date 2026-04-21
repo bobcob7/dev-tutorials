@@ -1,0 +1,387 @@
+---
+title: "Asteroid Dodger: Project Structure"
+description: "Organize a growing Rust project — group modules into directories, control visibility with pub(crate), and learn when a workspace makes sense."
+difficulty: intermediate
+topics: ["Rust", "project structure", "modules", "game dev"]
+publishDate: 2026-04-12
+---
+
+Your `src/` directory has 12 files in a flat list. Every module is a sibling of every other — `sound.rs` sits next to `collision.rs` sits next to `entity.rs`. That was fine at 4 files but it's getting hard to scan. This tutorial reorganizes the project into a directory structure that groups related modules, without changing any game behavior.
+
+## What you'll learn
+
+- Grouping modules into subdirectories with `mod.rs`
+- Re-exporting types with `pub use` for clean imports
+- `pub(crate)` visibility for internal-only items
+- When a Cargo workspace makes sense (and when it doesn't)
+
+## Milestones overview
+
+<div className="steps-grid">
+  <div className="step-card">
+    <span className="step-num">Milestone 1</span>
+    <span className="step-name">Directory Modules</span>
+    <span className="step-desc">Group files into entities/ and systems/</span>
+  </div>
+  <div className="step-card">
+    <span className="step-num">Milestone 2</span>
+    <span className="step-name">Visibility and Workspaces</span>
+    <span className="step-desc">pub(crate), re-exports, workspace overview</span>
+  </div>
+</div>
+
+## Prerequisites
+
+- Completed the [traits and generics tutorial](/tutorials/rust-macroquad-traits-generics)
+- Project has ~12 source files in a flat `src/` directory
+
+---
+
+## Milestone 1 — Directory modules
+
+<span className="step-badge">Milestone 1 of 2</span>
+
+### Step 1 — Group files into directories
+
+The current layout:
+
+```
+src/
+├── main.rs
+├── game.rs
+├── entity.rs
+├── player.rs
+├── asteroid.rs
+├── bullet.rs
+├── bomb.rs
+├── collision.rs
+├── grid.rs
+├── particle.rs
+├── sound.rs
+└── weapon.rs
+```
+
+The natural groups are **entities** (things in the game world) and **systems** (services that operate on them):
+
+```
+src/
+├── main.rs
+├── game.rs
+├── entities/
+│   ├── mod.rs
+│   ├── player.rs
+│   ├── asteroid.rs
+│   ├── bullet.rs
+│   └── bomb.rs
+├── systems/
+│   ├── mod.rs
+│   ├── collision.rs
+│   ├── grid.rs
+│   ├── particle.rs
+│   └── sound.rs
+├── entity.rs
+└── weapon.rs
+```
+
+`entity.rs` (the trait) and `weapon.rs` (the enum) stay at the root — they're shared types, not part of either group.
+
+Create the directories and move the files:
+
+```bash
+mkdir -p src/entities src/systems
+mv src/player.rs src/entities/
+mv src/asteroid.rs src/entities/
+mv src/bullet.rs src/entities/
+mv src/bomb.rs src/entities/
+mv src/collision.rs src/systems/
+mv src/grid.rs src/systems/
+mv src/particle.rs src/systems/
+mv src/sound.rs src/systems/
+```
+
+<div className="callout callout-info">
+  <span className="callout-title">Two ways to declare a directory module</span>
+  <p>
+    Rust has two conventions for directory modules. The older way uses
+    <code>entities/mod.rs</code> — a file named <code>mod.rs</code> inside the directory.
+    The newer way uses <code>entities.rs</code> alongside an <code>entities/</code> directory.
+    Both work identically. This tutorial uses <code>mod.rs</code> because it keeps the
+    module declaration and its children in the same directory, which is easier to navigate
+    in a file tree.
+  </p>
+</div>
+
+Create `src/entities/mod.rs`:
+
+```rust
+// src/entities/mod.rs
+pub mod player;
+pub mod asteroid;
+pub mod bullet;
+pub mod bomb;
+```
+
+Create `src/systems/mod.rs`:
+
+```rust
+// src/systems/mod.rs
+pub mod collision;
+pub mod grid;
+pub mod particle;
+pub mod sound;
+```
+
+Update `src/main.rs` — replace the individual `mod` declarations with the two directory modules:
+
+```rust
+use macroquad::prelude::*;
+
+mod entities;
+mod systems;
+mod entity;
+mod game;
+mod weapon;
+
+use game::Game;
+use systems::sound::Sounds;
+
+#[macroquad::main("Asteroid Dodger")]
+async fn main() {
+    let sounds = Sounds::load().await;
+    let mut game = Game::new(sounds);
+    loop {
+        game.update(get_frame_time());
+        game.draw();
+        next_frame().await;
+    }
+}
+```
+
+Now update every `use crate::` import across the project. The pattern is mechanical:
+
+| Old import | New import |
+|---|---|
+| `use crate::player::Player` | `use crate::entities::player::Player` |
+| `use crate::asteroid::Asteroid` | `use crate::entities::asteroid::Asteroid` |
+| `use crate::bullet::Bullet` | `use crate::entities::bullet::Bullet` |
+| `use crate::bomb::Bomb` | `use crate::entities::bomb::Bomb` |
+| `use crate::collision` | `use crate::systems::collision` |
+| `use crate::collision::Aabb` | `use crate::systems::collision::Aabb` |
+| `use crate::grid::Grid` | `use crate::systems::grid::Grid` |
+| `use crate::particle::Particles` | `use crate::systems::particle::Particles` |
+| `use crate::sound::Sounds` | `use crate::systems::sound::Sounds` |
+
+Apply these across `game.rs`, `entity.rs`, `entities/player.rs`, `entities/asteroid.rs`, and any other file with cross-module imports.
+
+<div className="callout callout-tip">
+  <span className="callout-title">Run it</span>
+  <p>
+    <code>cargo build</code> — fix any import errors the compiler reports. The error
+    messages are precise: "unresolved import <code>crate::player</code>" tells you exactly
+    which line to update. Once it compiles, <code>cargo run</code> behaves identically.
+  </p>
+</div>
+
+### Step 2 — Re-export for cleaner imports
+
+The imports are now verbose: `use crate::entities::player::Player`. In `game.rs` you end up with a wall of long paths. Re-exporting from `mod.rs` fixes this.
+
+Update `src/entities/mod.rs`:
+
+```rust
+// src/entities/mod.rs
+mod player;
+mod asteroid;
+mod bullet;
+mod bomb;
+
+pub use player::{Player, PLAYER_RADIUS, PLAYER_MASS};
+pub use asteroid::{self as asteroid_mod, Asteroid};
+pub use bullet::Bullet;
+pub use bomb::{Bomb, EXPLOSION_RADIUS};
+```
+
+Now `game.rs` can import directly from `entities`:
+
+```rust
+use crate::entities::{Player, PLAYER_RADIUS, PLAYER_MASS, Asteroid, Bullet, Bomb, EXPLOSION_RADIUS};
+use crate::entities::asteroid_mod;  // for asteroid_mod::resolve_collisions
+```
+
+Do the same for `src/systems/mod.rs`:
+
+```rust
+// src/systems/mod.rs
+mod collision;
+mod grid;
+mod particle;
+mod sound;
+
+pub use collision::Aabb;
+pub use grid::Grid;
+pub use particle::Particles;
+pub use sound::Sounds;
+
+// Re-export the collision module itself for function access
+pub use collision as collision_mod;
+```
+
+Now `game.rs` uses:
+
+```rust
+use crate::systems::{Aabb, Grid, Particles, Sounds, collision_mod as collision};
+```
+
+<div className="callout callout-info">
+  <span className="callout-title">pub use is a facade</span>
+  <p>
+    <code>pub use</code> re-exports an item from a child module as if it were declared
+    in the parent. The child modules become <code>mod</code> (private) — outside code
+    can't reach <code>crate::entities::player</code> directly, only through the
+    re-exported types. This is the same pattern the Rust standard library uses:
+    <code>std::collections::HashMap</code> is actually defined deep inside
+    <code>std::collections::hash::map</code> but re-exported at the shorter path.
+  </p>
+</div>
+
+Notice that the child `mod` declarations changed from `pub mod` to `mod`. The re-exports are the public API — the internal file structure is hidden. You can rename, split, or merge files inside `entities/` without changing any import in `game.rs`.
+
+<div className="callout callout-tip">
+  <span className="callout-title">Run it</span>
+  <p>
+    <code>cargo build</code> — the project compiles with the shorter imports. <code>cargo run</code>
+    is identical. The directory structure is now organized but the game hasn't changed.
+  </p>
+</div>
+
+---
+
+## Milestone 2 — Visibility and workspaces
+
+<span className="step-badge">Milestone 2 of 2</span>
+
+### Step 3 — `pub(crate)` visibility
+
+So far everything is either `pub` (visible to all) or private (visible only within the module). There's a middle ground: `pub(crate)` makes something visible anywhere in the project but not to external consumers.
+
+This matters when your code is a library. For a game binary it's less critical — nothing external imports your crate. But it's a good habit that communicates intent: "this is shared internally, not part of the public API."
+
+Apply `pub(crate)` to items that are used across modules but aren't meant to be exported:
+
+```rust
+// In entities/player.rs
+pub(crate) const PLAYER_RADIUS: f32 = 16.0;
+pub(crate) const PLAYER_MASS: f32 = 500.0;
+```
+
+```rust
+// In entities/bomb.rs
+pub(crate) const EXPLOSION_RADIUS: f32 = 150.0;
+```
+
+```rust
+// In game.rs — the Keybindings struct is used by player.rs
+pub(crate) struct Keybindings { ... }
+pub(crate) enum Action { ... }
+```
+
+The rule of thumb: use `pub` for types and methods that define the module's interface (struct definitions, constructors, trait methods). Use `pub(crate)` for constants, helpers, and internal types that other modules need but that aren't conceptually part of the API.
+
+<div className="callout callout-info">
+  <span className="callout-title">Other visibility levels</span>
+  <p>
+    Rust also has <code>pub(super)</code> (visible to the parent module only) and
+    <code>pub(in path)</code> (visible to a specific ancestor). These are rarely
+    needed in practice — <code>pub</code> and <code>pub(crate)</code> cover nearly
+    every case. If you find yourself reaching for <code>pub(super)</code>, consider
+    whether the modules should be reorganized instead.
+  </p>
+</div>
+
+### Step 4 — When to use a workspace
+
+A Cargo **workspace** splits a project into multiple crates that share a single `Cargo.lock` and `target/` directory. Each crate compiles independently.
+
+For this game, a workspace might look like:
+
+```
+asteroid-dodger/
+├── Cargo.toml          (workspace root)
+├── crates/
+│   ├── core/           (game logic — no rendering dependency)
+│   │   ├── Cargo.toml
+│   │   └── src/
+│   │       ├── lib.rs
+│   │       ├── collision.rs
+│   │       ├── grid.rs
+│   │       └── physics.rs
+│   └── game/           (rendering + input — depends on macroquad + core)
+│       ├── Cargo.toml
+│       └── src/
+│           ├── main.rs
+│           ├── player.rs
+│           └── ...
+```
+
+The `core` crate has no macroquad dependency — just math and data structures. It can be tested with `cargo test -p core` without opening a window. The `game` crate depends on both `core` and `macroquad`.
+
+**When a workspace makes sense:**
+- Two binaries share logic (a game + a level editor)
+- You want to test core logic without pulling in a rendering library
+- Compile times matter — changing a file in `game` doesn't recompile `core`
+- You're publishing a library alongside the application
+
+**When it doesn't:**
+- Single binary, all code is tightly coupled
+- The overhead of managing multiple `Cargo.toml` files outweighs the benefit
+- You're still learning — single-crate is simpler
+
+This game is at the boundary. The integration testing tutorial already showed the pain of testing `Game` without a window. A workspace would solve that cleanly. But for a tutorial project with ~12 files, the single-crate approach with directory modules (what we just built) is the right level of organization.
+
+<div className="callout callout-info">
+  <span className="callout-title">Practical rule</span>
+  <p>
+    Start with a single crate and directory modules. Split into a workspace when you
+    feel the pain — usually when tests need a subset of dependencies, or when a second
+    binary shares logic with the first. Premature workspace splitting adds configuration
+    overhead without benefit.
+  </p>
+</div>
+
+<div className="callout callout-tip">
+  <span className="callout-title">Run it</span>
+  <p>
+    <code>cargo run</code> — the game runs identically. The refactoring is purely
+    structural. Run <code>cargo test</code> to verify the unit tests still pass too.
+  </p>
+</div>
+
+---
+
+## Final directory layout
+
+```
+src/
+├── main.rs                 — entry point, top-level module declarations
+├── game.rs                 — Game struct, state machine, update/draw
+├── entity.rs               — Entity trait (shared interface)
+├── weapon.rs               — WeaponType enum (shared data)
+├── entities/
+│   ├── mod.rs              — pub use re-exports
+│   ├── player.rs
+│   ├── asteroid.rs
+│   ├── bullet.rs
+│   └── bomb.rs
+└── systems/
+    ├── mod.rs              — pub use re-exports
+    ├── collision.rs
+    ├── grid.rs
+    ├── particle.rs
+    └── sound.rs
+```
+
+No files changed behavior. Imports are shorter via re-exports. Internal constants use `pub(crate)`. The structure scales to many more files without becoming a wall of siblings.
+
+## Next steps
+
+- **[Menu, Power-ups, and Shop](/tutorials/rust-macroquad-menu-shop)** — title screen, keybinding editor, collectible power-ups, and shop
